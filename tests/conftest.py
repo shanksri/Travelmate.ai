@@ -2,6 +2,7 @@ import json
 import os
 from datetime import date
 
+import httpx
 import pytest
 
 # Force safe defaults before any app module can call get_settings() and cache
@@ -12,6 +13,14 @@ import pytest
 # setdefault, not assignment: an intentional CI override still wins.
 os.environ.setdefault("TRAVELMATE_STORE", "memory")
 os.environ.setdefault("TRAVELMATE_PROVIDER", "mock")
+
+# Same problem, different mechanism: app/providers/{aviationstack,tavily}.py
+# call load_dotenv() at import time, which — unlike pydantic-settings — does
+# write into the real os.environ. A developer's .env with LANGSMITH_TRACING=
+# true would otherwise make LangGraph try to phone home to LangSmith with a
+# real API key on every graph invocation in the test suite. Setting this
+# first means load_dotenv()'s default no-override behavior leaves it alone.
+os.environ.setdefault("LANGSMITH_TRACING", "false")
 
 from app.models.itinerary import Itinerary, PlannedTrip, TripRequest  # noqa: E402
 from app.providers.mock import MockTravelProvider  # noqa: E402
@@ -89,6 +98,46 @@ def sample_planned_trip(request: TripRequest, trip_id: str = "abc123") -> Planne
         ),
         summary="A short stay.",
     )
+
+
+class BlockedNetworkCall(RuntimeError):
+    """A test tried to reach the network without mocking httpx first."""
+
+
+@pytest.fixture(autouse=True)
+def _block_real_network_calls(monkeypatch):
+    """app/providers/aviationstack.py and tavily.py call load_dotenv() at
+    import time, so real API keys are sitting in os.environ during every test
+    run. A test that forgets to mock httpx would otherwise silently spend real
+    API quota — fail loudly instead.
+
+    Patches the top-level httpx.get/post convenience functions our fetch
+    clients call, not httpx.Client's instance methods — so FastAPI's
+    TestClient (which drives requests through its own Client instance) is
+    unaffected.
+    """
+
+    def _blocked(*args, **kwargs):
+        raise BlockedNetworkCall("A test attempted a real httpx.get/post call — mock it.")
+
+    monkeypatch.setattr("httpx.get", _blocked)
+    monkeypatch.setattr("httpx.post", _blocked)
+
+
+class FakeHTTPResponse:
+    """Stands in for an `httpx.Response` returned by a mocked get/post."""
+
+    def __init__(self, json_data: dict, status_code: int = 200) -> None:
+        self._json = json_data
+        self.status_code = status_code
+        self.text = json.dumps(json_data)
+
+    def json(self) -> dict:
+        return self._json
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError("error", request=None, response=self)
 
 
 class FakeLLM:
