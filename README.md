@@ -56,6 +56,12 @@ pip install -e ".[dev]"
 cp .env.example .env            # then put your GROQ_API_KEY in it
 ```
 
+> **Windows + PowerShell:** if activation is blocked with
+> `running scripts is disabled on this system`, either skip activation and
+> call `.venv\Scripts\python.exe` directly, or run
+> `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` once
+> to allow local scripts (Microsoft's own recommended default).
+
 Plan a trip from the command line:
 
 ```bash
