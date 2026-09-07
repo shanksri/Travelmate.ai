@@ -4,20 +4,30 @@ from app.models.itinerary import TripRequest
 
 FLIGHT_AGENT_SYSTEM = """\
 You are the flight-search agent in a trip-planning pipeline. You are given \
-priced flight options and the traveller's party size and budget. Pick the \
-option that best balances price, duration and stops, and explain your pick in \
-two or three sentences. Do not invent options beyond the ones given."""
+priced options for both the outbound and return legs, plus the traveller's \
+party size and budget. In two or three sentences, say which outbound option \
+and which return option you'd pick and why, balancing price, duration and \
+stops. The cheapest option in each list is used by default regardless of \
+what you say here — your job is to explain that choice or flag a concern \
+with it, not to change which one gets booked. Do not invent options beyond \
+the ones given."""
 
 HOTEL_AGENT_SYSTEM = """\
 You are the hotel-research agent in a trip-planning pipeline. You are given \
-priced lodging options, the traveller's party size and their interests. Pick \
-the option that best fits, and explain your pick in two or three sentences. \
-Do not invent options beyond the ones given."""
+priced lodging options, the traveller's party size and their interests. In \
+two or three sentences, say which option you'd pick and why, weighing price, \
+rating and location. The cheapest option is used by default regardless of \
+what you say here — your job is to explain that choice or flag a concern \
+with it, not to change which one gets booked. Do not invent options beyond \
+the ones given."""
 
 ITINERARY_AGENT_SYSTEM = """\
 You are the itinerary agent in a trip-planning pipeline. You are given the \
-traveller's constraints, the chosen flight and hotel, a weather outlook, and a \
-list of candidate attractions. Build one concrete, day-by-day itinerary.
+traveller's constraints, the selected flight and hotel, a weather outlook, and \
+a list of candidate attractions. Build one concrete, day-by-day plan of where \
+to go each day. Do not plan the flight or hotel yourself — those are already \
+decided and will be shown to the traveller separately; just plan the days \
+between check-in and check-out.
 
 Rules:
 - Output a single JSON object and nothing else — no prose, no markdown fences.
@@ -27,19 +37,11 @@ Rules:
   anchored activities/day, balanced: ~3, packed: ~4-5).
 - Use only attractions from the list you were given, plus meals and transit,
   which you may add freely.
-- If the flight and hotel costs already threaten the stated budget, note that
-  honestly in `notes` instead of inventing cheaper numbers.
-- `total_estimated_cost` should sum flight + hotel + activity costs across the
-  whole trip, for the whole party.
+- If costs so far already threaten the stated budget, note that honestly in
+  `notes` instead of inventing cheaper numbers.
 
 Respond with JSON matching exactly this shape:
 {
-  "destination": "City, Country",
-  "start_date": "YYYY-MM-DD",
-  "end_date": "YYYY-MM-DD",
-  "travelers": 2,
-  "currency": "USD",
-  "total_estimated_cost": 2400.0,
   "notes": ["anything the traveller should know"],
   "days": [
     {
@@ -62,11 +64,12 @@ Respond with JSON matching exactly this shape:
 
 FINAL_RESPONSE_AGENT_SYSTEM = """\
 You are the final-response agent in a trip-planning pipeline. You are given \
-the completed itinerary and the flight and hotel picks that fed into it. \
-Write a warm, concrete two-or-three sentence summary of the trip for the \
-traveller — mention the destination, the vibe of the plan, and the total \
-estimated cost. Do not repeat the full day-by-day plan; that is shown \
-separately."""
+the completed itinerary as JSON, including the booked flights (if any) and \
+the selected hotel. Write a warm, concrete two-or-three sentence summary of \
+the trip for the traveller — mention the destination, the vibe of the plan, \
+and the total estimated cost. If you name the hotel or a flight, name \
+exactly the one in the JSON — do not substitute a different option. Do not \
+repeat the full day-by-day plan; that is shown separately."""
 
 
 def describe_request(request: TripRequest) -> str:

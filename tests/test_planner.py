@@ -1,5 +1,5 @@
 import pytest
-from conftest import FakeLLM, itinerary_json
+from conftest import FakeLLM, draft_itinerary_json
 
 from app.agent.planner import PlanningError, plan_trip
 from app.agent.prompts import (
@@ -13,7 +13,7 @@ from app.core.config import Settings
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(model="gpt-4", max_itinerary_retries=2)
+    return Settings(model="gpt-4o-mini", max_itinerary_retries=2)
 
 
 def happy_path_llm(trip_request) -> FakeLLM:
@@ -23,7 +23,7 @@ def happy_path_llm(trip_request) -> FakeLLM:
         by_system={
             FLIGHT_AGENT_SYSTEM: ["Meridian Air — cheapest, no stops."],
             HOTEL_AGENT_SYSTEM: ["The Ardent House — best rated."],
-            ITINERARY_AGENT_SYSTEM: [itinerary_json(trip_request)],
+            ITINERARY_AGENT_SYSTEM: [draft_itinerary_json(trip_request)],
             FINAL_RESPONSE_AGENT_SYSTEM: ["Four easy, food-forward days in Lisbon."],
         }
     )
@@ -37,6 +37,12 @@ def test_plan_trip_runs_the_full_agent_graph(provider, trip_request, settings):
     assert trip.itinerary.destination == "Lisbon, Portugal"
     assert len(trip.itinerary.days) == trip_request.nights + 1
     assert trip.summary == "Four easy, food-forward days in Lisbon."
+    # Flights and lodging make it all the way to the final itinerary now,
+    # not just into the prompt the itinerary agent saw.
+    assert trip.itinerary.outbound_flight is not None
+    assert trip.itinerary.return_flight is not None
+    assert len(trip.itinerary.lodging_options) > 0
+    assert trip.itinerary.total_estimated_cost > 0
     assert any("flight_agent" in m for m in trip.agent_trace)
     assert any("hotel_agent" in m for m in trip.agent_trace)
     assert any("itinerary_agent" in m for m in trip.agent_trace)
@@ -85,4 +91,6 @@ def test_plan_trip_works_without_an_origin(provider, trip_request, settings):
     trip = plan_trip(request, llm=llm, provider=provider, settings=settings)
 
     assert trip.itinerary is not None
+    assert trip.itinerary.outbound_flight is None
+    assert trip.itinerary.return_flight is None
     assert any("skipped" in m for m in trip.agent_trace)

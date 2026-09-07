@@ -14,10 +14,16 @@ import sys
 from datetime import date
 
 import openai
+from dotenv import load_dotenv
 
 from app.agent.planner import PlanningError, plan_trip
 from app.core.logging import configure_logging
-from app.models.itinerary import PlannedTrip, TripRequest
+from app.models.itinerary import FlightLeg, PlannedTrip, TripRequest
+
+# So OPENAI_API_KEY (and friends) in .env reach this process without having
+# to export them by hand — app/core/config.py only loads .env for TRAVELMATE_*
+# settings, not for keys the SDKs read directly from the environment.
+load_dotenv()
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -37,6 +43,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _render_flight(flight: FlightLeg) -> str:
+    stops = "nonstop" if flight.stops == 0 else f"{flight.stops} stop(s)"
+    price = f", ${flight.total_usd:,.0f} total" if flight.total_usd is not None else ""
+    return (
+        f"{flight.carrier} — {flight.origin} -> {flight.destination}, "
+        f"{flight.depart_date} ({stops}{price})"
+    )
+
+
 def render(trip: PlannedTrip) -> str:
     it = trip.itinerary
     lines = [
@@ -47,6 +62,32 @@ def render(trip: PlannedTrip) -> str:
         lines.append(f"Estimated total: {it.currency} {it.total_estimated_cost:,.0f}")
     lines.append("")
 
+    lines.append("Flights:")
+    if it.outbound_flight:
+        lines.append(f"  Outbound: {_render_flight(it.outbound_flight)}")
+    if it.return_flight:
+        lines.append(f"  Return:   {_render_flight(it.return_flight)}")
+    if not it.outbound_flight and not it.return_flight:
+        lines.append("  (none — no origin was given, so nothing was booked)")
+    lines.append("")
+
+    if it.lodging_options:
+        lines.append("Where to stay (* = selected):")
+        for i, hotel in enumerate(it.lodging_options):
+            marker = "*" if i == 0 else " "
+            bits = [hotel.tier] if hotel.tier else []
+            if hotel.rating is not None:
+                bits.append(f"{hotel.rating} rating")
+            tag = f" ({', '.join(bits)})" if bits else ""
+            cost = (
+                f" — ${hotel.nightly_usd:,.0f}/night, ${hotel.total_usd:,.0f} total"
+                if hotel.nightly_usd is not None and hotel.total_usd is not None
+                else ""
+            )
+            lines.append(f"  {marker} {hotel.name}{tag}{cost}")
+        lines.append("")
+
+    lines.append("Day by day:")
     for day in it.days:
         lines.append(f"Day {day.day} — {day.date}: {day.summary}")
         for act in day.activities:
@@ -71,6 +112,11 @@ def render(trip: PlannedTrip) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # render() uses Unicode (em dashes, middle dots) that isn't in every
+    # Windows console codepage — force UTF-8 stdout so printing it can't
+    # crash with a UnicodeEncodeError regardless of the terminal's own
+    # settings.
+    sys.stdout.reconfigure(encoding="utf-8")
     configure_logging()
     args = parse_args(argv)
 

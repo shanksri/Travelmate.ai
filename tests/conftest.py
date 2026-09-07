@@ -45,8 +45,10 @@ def trip_request() -> TripRequest:
     )
 
 
-def itinerary_payload(request: TripRequest) -> dict:
-    """A valid itinerary for `request`, one day per calendar day."""
+def draft_itinerary_payload(request: TripRequest) -> dict:
+    """What the itinerary agent itself returns: just days + notes. Flights and
+    lodging are assembled separately from real search results, not by the
+    LLM — see `DraftItinerary` and `build_itinerary_node`."""
     days = []
     for offset in range(request.nights + 1):
         day_date = date.fromordinal(request.start_date.toordinal() + offset)
@@ -62,25 +64,16 @@ def itinerary_payload(request: TripRequest) -> dict:
                         "description": "Morning stroll.",
                         "location": "Alfama",
                         "category": "sightseeing",
-                        "estimated_cost_usd": 0,
+                        "estimated_cost_usd": 20,
                     }
                 ],
             }
         )
-    return {
-        "destination": request.destination or "Lisbon, Portugal",
-        "start_date": request.start_date.isoformat(),
-        "end_date": request.end_date.isoformat(),
-        "travelers": request.travelers,
-        "currency": "USD",
-        "total_estimated_cost": 2400.0,
-        "notes": ["Book the castle ahead."],
-        "days": days,
-    }
+    return {"notes": ["Book the castle ahead."], "days": days}
 
 
-def itinerary_json(request: TripRequest, **overrides) -> str:
-    return json.dumps(itinerary_payload(request) | overrides)
+def draft_itinerary_json(request: TripRequest, **overrides) -> str:
+    return json.dumps(draft_itinerary_payload(request) | overrides)
 
 
 def sample_planned_trip(request: TripRequest, trip_id: str = "abc123") -> PlannedTrip:

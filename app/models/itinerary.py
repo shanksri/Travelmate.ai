@@ -59,11 +59,54 @@ class DayPlan(BaseModel):
     activities: list[Activity] = Field(default_factory=list)
 
 
+class FlightLeg(BaseModel):
+    """One flight leg, built from a real search result — never LLM-authored,
+    so the carrier, price and timing here can't be hallucinated."""
+
+    carrier: str
+    origin: str
+    destination: str
+    depart_date: date
+    stops: int = 0
+    duration_hours: float | None = None
+    price_usd_per_person: float | None = Field(default=None, ge=0)
+    total_usd: float | None = Field(default=None, ge=0)
+    rationale: str | None = Field(
+        default=None, description="The flight agent's reasoning for this pick."
+    )
+
+
+class LodgingOption(BaseModel):
+    """One candidate place to stay, built from a real search result."""
+
+    name: str
+    tier: str | None = None
+    rating: float | None = None
+    neighbourhood: str | None = None
+    nightly_usd: float | None = Field(default=None, ge=0)
+    total_usd: float | None = Field(default=None, ge=0)
+
+
+class DraftItinerary(BaseModel):
+    """What the itinerary agent itself is asked to produce — just the days.
+
+    Flights and lodging are assembled separately from real search results
+    (see app/agent/nodes.py) and merged in to make the full `Itinerary`; the
+    agent never re-types facts it could get wrong.
+    """
+
+    days: list[DayPlan]
+    notes: list[str] = Field(default_factory=list)
+
+
 class Itinerary(BaseModel):
     destination: str
     start_date: date
     end_date: date
     travelers: int
+    outbound_flight: FlightLeg | None = None
+    return_flight: FlightLeg | None = None
+    lodging_options: list[LodgingOption] = Field(default_factory=list)
     days: list[DayPlan]
     currency: str = "USD"
     total_estimated_cost: float | None = Field(default=None, ge=0)
