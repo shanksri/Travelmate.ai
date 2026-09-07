@@ -1,14 +1,19 @@
 import json
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import openai
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import health, trips
 from app.core.logging import configure_logging
 from app.providers.aviationstack import fetch_flights
 from app.providers.tavily import fetch_search
 from app.store import get_store
+
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 configure_logging()
 
@@ -31,6 +36,21 @@ app = FastAPI(
 
 app.include_router(health.router)
 app.include_router(trips.router)
+
+
+# --- Frontend -----------------------------------------------------------
+#
+# Plain HTML/CSS/JS, no build step — served by this same process so the page
+# and the API it calls are same-origin (no CORS needed). "/static" is a
+# mount, matched before any route below it only for paths under that prefix,
+# so it can't shadow /health or /trips.
+
+app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+
+
+@app.get("/", include_in_schema=False)
+def index() -> FileResponse:
+    return FileResponse(FRONTEND_DIR / "index.html")
 
 
 # --- Function calling for the four agents -----------------------------------

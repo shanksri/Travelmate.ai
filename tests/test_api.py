@@ -21,6 +21,26 @@ def test_health_reports_the_configured_model(client):
     assert body["store"] == "memory"
 
 
+def test_root_serves_the_frontend(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "trip-form" in response.text
+
+
+def test_static_assets_are_served(client):
+    css = client.get("/static/style.css")
+    js = client.get("/static/app.js")
+    assert css.status_code == 200
+    assert js.status_code == 200
+    assert "text/css" in css.headers["content-type"]
+
+
+def test_root_is_not_in_the_openapi_schema(client):
+    schema = client.get("/openapi.json").json()
+    assert "/" not in schema["paths"]
+
+
 def test_plan_rejects_backwards_dates(client):
     response = client.post(
         "/trips/plan",

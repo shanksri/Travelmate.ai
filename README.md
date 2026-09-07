@@ -68,7 +68,9 @@ Plan a trip from the command line:
 python scripts/plan_trip.py --destination "Kyoto, Japan" --start 2026-04-10 --end 2026-04-15 --travelers 2 --budget 4000 --interests food,history
 ```
 
-Or run the API:
+Or run the API — and open `http://localhost:8000` for a form-based frontend
+(plain HTML/CSS/JS, no build step, no Node — the same process serves both the
+page and the API, so there's no CORS to configure):
 
 ```bash
 uvicorn app.main:app --reload
@@ -76,6 +78,7 @@ uvicorn app.main:app --reload
 
 | Method | Path | What it does |
 |---|---|---|
+| `GET` | `/` | The frontend — plan a trip and see the result rendered as a page |
 | `GET` | `/health` | Liveness, plus the configured model, provider and store |
 | `POST` | `/trips/plan` | Plan a trip; returns the stored `PlannedTrip` |
 | `GET` | `/trips` | Every trip planned since the process started |
@@ -108,6 +111,8 @@ Interactive docs are at `/docs`.
 | `app/models/itinerary.py` | `TripRequest`, `Itinerary`, `PlannedTrip` |
 | `app/api/` | FastAPI routes and wire schemas |
 | `app/store.py` | `TripStore` Protocol, `InMemoryTripStore`, and `SqlTripStore` (Postgres via Docker, or any SQLAlchemy engine) |
+| `frontend/` | The plain HTML/CSS/JS frontend — served by `app/main.py`, no build step |
+| `scripts/run_server.py` | Launches the API from an absolute path — a workaround if something ever runs `uvicorn` from the wrong working directory and silently imports a same-named `app` package from elsewhere |
 
 ## Travel data
 

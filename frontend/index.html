@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>travelmate.ai</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>travelmate.ai</h1>
+    <p class="subtitle">Tell it your trip. It plans the flights, the stay, and every day in between.</p>
+  </header>
+
+  <main>
+    <form id="trip-form">
+      <div class="field-row">
+        <label>
+          Start date
+          <input type="date" name="start_date" required />
+        </label>
+        <label>
+          End date
+          <input type="date" name="end_date" required />
+        </label>
+      </div>
+
+      <div class="field-row">
+        <label>
+          Origin <span class="hint">(leave blank to skip flights)</span>
+          <input type="text" name="origin" placeholder="Boston, MA" />
+        </label>
+        <label>
+          Destination <span class="hint">(leave blank to let it choose)</span>
+          <input type="text" name="destination" placeholder="Lisbon, Portugal" />
+        </label>
+      </div>
+
+      <div class="field-row">
+        <label>
+          Travelers
+          <input type="number" name="travelers" min="1" max="20" value="1" required />
+        </label>
+        <label>
+          Budget (USD, total) <span class="hint">(optional)</span>
+          <input type="number" name="budget_usd" min="1" placeholder="3000" />
+        </label>
+        <label>
+          Pace
+          <select name="pace">
+            <option value="relaxed">Relaxed</option>
+            <option value="balanced" selected>Balanced</option>
+            <option value="packed">Packed</option>
+          </select>
+        </label>
+      </div>
+
+      <label class="field-block">
+        Interests <span class="hint">(comma-separated, optional)</span>
+        <input type="text" name="interests" placeholder="food, history, hiking" />
+      </label>
+
+      <label class="field-block">
+        Notes <span class="hint">(optional)</span>
+        <textarea name="notes" rows="2" placeholder="Anything else it should know"></textarea>
+      </label>
+
+      <button type="submit" id="submit-button">Plan my trip</button>
+    </form>
+
+    <div id="status" class="status" hidden></div>
+    <div id="result" class="result" hidden></div>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

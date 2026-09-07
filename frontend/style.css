@@ -1,0 +1,268 @@
+:root {
+  --ink: #1f2430;
+  --muted: #6b7280;
+  --line: #e2e5ea;
+  --bg: #f7f8fa;
+  --card: #ffffff;
+  --accent: #2f6f4f;
+  --accent-ink: #ffffff;
+  --error-bg: #fdecec;
+  --error-ink: #9b2226;
+  --radius: 10px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0 1.5rem 4rem;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+}
+
+header {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 2.5rem 0 1rem;
+}
+
+h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.75rem;
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--muted);
+}
+
+main {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+form {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.field-block {
+  width: 100%;
+}
+
+.hint {
+  font-weight: 400;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+textarea {
+  resize: vertical;
+  font-family: inherit;
+}
+
+button {
+  align-self: flex-start;
+  font: inherit;
+  font-weight: 600;
+  padding: 0.65rem 1.4rem;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+button:not(:disabled):hover {
+  filter: brightness(1.08);
+}
+
+.status {
+  margin-top: 1.25rem;
+  padding: 0.85rem 1rem;
+  border-radius: var(--radius);
+  font-size: 0.95rem;
+}
+
+.status.loading {
+  background: #eef2ff;
+  color: #3730a3;
+}
+
+.status.error {
+  background: var(--error-bg);
+  color: var(--error-ink);
+}
+
+.result {
+  margin-top: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.25rem 1.5rem;
+}
+
+.card h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.05rem;
+}
+
+.trip-header h2 {
+  font-size: 1.3rem;
+}
+
+.trip-cost {
+  color: var(--muted);
+  margin: 0;
+}
+
+.flight-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.flight-row:last-child {
+  border-bottom: none;
+}
+
+.flight-label {
+  font-weight: 600;
+  min-width: 5rem;
+}
+
+.flight-none {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.hotel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.hotel-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+}
+
+.hotel-list li.selected {
+  border-color: var(--accent);
+  background: #f1f8f4;
+}
+
+.hotel-name {
+  font-weight: 600;
+}
+
+.hotel-meta {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.selected-tag {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.day {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.9rem;
+  margin-bottom: 0.9rem;
+}
+
+.day:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.day h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.activity {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.25rem 0;
+  font-size: 0.92rem;
+}
+
+.activity-time {
+  color: var(--muted);
+  min-width: 3.2rem;
+}
+
+.activity-cost {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.notes ul {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+.summary {
+  font-style: italic;
+  color: var(--ink);
+}

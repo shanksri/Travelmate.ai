@@ -12,6 +12,7 @@ RUN pip install --upgrade pip && pip install .
 
 COPY app ./app
 COPY scripts ./scripts
+COPY frontend ./frontend
 
 RUN useradd --create-home --uid 1000 travelmate && chown -R travelmate /srv
 USER travelmate
