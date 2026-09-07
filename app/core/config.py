@@ -11,13 +11,14 @@ class Settings(BaseSettings):
         env_file=".env", env_prefix="TRAVELMATE_", extra="ignore"
     )
 
-    # Which Claude model plans the trip, and how hard it is allowed to think.
-    model: str = "claude-opus-5"
-    effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
-    max_tokens: int = 16000
+    # The Groq-hosted Llama 3 model every agent node reasons with.
+    model: str = "llama-3.3-70b-versatile"
+    temperature: float = 0.3
+    max_tokens: int = 4096
 
-    # Safety rail on the agentic loop: how many assistant turns before we stop.
-    max_tool_iterations: int = 24
+    # How many times the itinerary agent may retry after a schema-invalid
+    # response before the run fails outright.
+    max_itinerary_retries: int = 2
 
     # "mock" serves deterministic travel data so the agent runs without any
     # third-party keys. "live" swaps in real provider clients.

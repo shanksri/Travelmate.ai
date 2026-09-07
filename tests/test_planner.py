@@ -1,86 +1,88 @@
 import pytest
-from conftest import FakeClient, submit_call, text_block, tool_use_block
+from conftest import FakeLLM, itinerary_json
 
 from app.agent.planner import PlanningError, plan_trip
+from app.agent.prompts import (
+    FINAL_RESPONSE_AGENT_SYSTEM,
+    FLIGHT_AGENT_SYSTEM,
+    HOTEL_AGENT_SYSTEM,
+    ITINERARY_AGENT_SYSTEM,
+)
 from app.core.config import Settings
 
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(model="claude-opus-5", max_tokens=4096, max_tool_iterations=8)
+    return Settings(model="llama-3.3-70b-versatile", max_itinerary_retries=2)
 
 
-def test_plan_trip_returns_the_submitted_itinerary(provider, trip_request, settings):
-    lookup = tool_use_block(
-        "search_attractions",
-        {"destination": "Lisbon, Portugal", "interests": "food", "limit": 4},
-    )
-    client = FakeClient(
-        [
-            [
-                [lookup],
-                [submit_call(trip_request)],
-                [text_block("Four days in Lisbon, food-forward and easy-paced.")],
-            ]
-        ]
+def happy_path_llm(trip_request) -> FakeLLM:
+    """Routes by system prompt so it doesn't care which of flight/hotel — run
+    in parallel by the graph — happens to call first."""
+    return FakeLLM(
+        by_system={
+            FLIGHT_AGENT_SYSTEM: ["Meridian Air — cheapest, no stops."],
+            HOTEL_AGENT_SYSTEM: ["The Ardent House — best rated."],
+            ITINERARY_AGENT_SYSTEM: [itinerary_json(trip_request)],
+            FINAL_RESPONSE_AGENT_SYSTEM: ["Four easy, food-forward days in Lisbon."],
+        }
     )
 
-    trip = plan_trip(trip_request, client=client, provider=provider, settings=settings)
+
+def test_plan_trip_runs_the_full_agent_graph(provider, trip_request, settings):
+    llm = happy_path_llm(trip_request)
+
+    trip = plan_trip(trip_request, llm=llm, provider=provider, settings=settings)
 
     assert trip.itinerary.destination == "Lisbon, Portugal"
     assert len(trip.itinerary.days) == trip_request.nights + 1
-    assert trip.tool_calls == ["search_attractions", "submit_itinerary"]
-    assert trip.summary.startswith("Four days")
+    assert trip.summary == "Four easy, food-forward days in Lisbon."
+    assert any("flight_agent" in m for m in trip.agent_trace)
+    assert any("hotel_agent" in m for m in trip.agent_trace)
+    assert any("itinerary_agent" in m for m in trip.agent_trace)
+    assert any("final_response_agent" in m for m in trip.agent_trace)
     assert trip.id
 
 
-def test_planner_passes_thinking_and_effort_to_the_api(provider, trip_request, settings):
-    client = FakeClient([[[submit_call(trip_request)], [text_block("done")]]])
+def test_plan_trip_resolves_a_destination_when_none_is_given(provider, settings):
+    from datetime import date
 
-    plan_trip(trip_request, client=client, provider=provider, settings=settings)
+    from app.models.itinerary import TripRequest
 
-    call = client.calls[0]
-    assert call["model"] == "claude-opus-5"
-    assert call["thinking"] == {"type": "adaptive"}
-    assert call["output_config"] == {"effort": settings.effort}
-    assert call["max_iterations"] == settings.max_tool_iterations
+    request = TripRequest(
+        start_date=date(2026, 6, 1),
+        end_date=date(2026, 6, 4),
+        travelers=1,
+        interests=["food", "history"],
+    )
+    llm = happy_path_llm(request.model_copy(update={"destination": "Lisbon, Portugal"}))
+
+    trip = plan_trip(request, llm=llm, provider=provider, settings=settings)
+
+    assert trip.itinerary is not None
+    assert any("coordinator:" in m for m in trip.agent_trace)
 
 
-def test_planner_nudges_once_when_the_agent_forgets_to_submit(
+def test_plan_trip_raises_when_the_itinerary_agent_never_recovers(
     provider, trip_request, settings
 ):
-    client = FakeClient(
-        [
-            [[text_block("Here is a lovely plan, in prose.")]],
-            [[submit_call(trip_request)], [text_block("Submitted.")]],
-        ]
+    llm = FakeLLM(
+        by_system={
+            FLIGHT_AGENT_SYSTEM: ["Meridian Air."],
+            HOTEL_AGENT_SYSTEM: ["The Ardent House."],
+            ITINERARY_AGENT_SYSTEM: ["nope", "still nope", "nope again"],
+        }
     )
 
-    trip = plan_trip(trip_request, client=client, provider=provider, settings=settings)
+    with pytest.raises(PlanningError, match="gave up"):
+        plan_trip(trip_request, llm=llm, provider=provider, settings=settings)
+
+
+def test_plan_trip_works_without_an_origin(provider, trip_request, settings):
+    request = trip_request.model_copy(update={"origin": None})
+    llm = happy_path_llm(request)
+
+    trip = plan_trip(request, llm=llm, provider=provider, settings=settings)
 
     assert trip.itinerary is not None
-    assert len(client.calls) == 2
-    # The nudge is carried in the replayed history, not a fresh conversation.
-    assert "submit_itinerary" in client.calls[1]["messages"][-1]["content"]
-
-
-def test_planner_raises_when_no_itinerary_is_ever_submitted(
-    provider, trip_request, settings
-):
-    client = FakeClient([[[text_block("thinking about it")]], [[text_block("still no")]]])
-
-    with pytest.raises(PlanningError, match="never submitted"):
-        plan_trip(trip_request, client=client, provider=provider, settings=settings)
-
-
-def test_a_rejected_itinerary_can_be_resubmitted(provider, trip_request, settings):
-    """A malformed submission is an error the agent sees, not a crash."""
-    bad = submit_call(trip_request)
-    bad.input = {"itinerary_json": "{ not json"}
-
-    client = FakeClient([[[bad], [submit_call(trip_request)], [text_block("Fixed.")]]])
-
-    trip = plan_trip(trip_request, client=client, provider=provider, settings=settings)
-
-    assert trip.itinerary is not None
-    assert trip.tool_calls.count("submit_itinerary") == 2
+    assert any("skipped" in m for m in trip.agent_trace)

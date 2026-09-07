@@ -4,7 +4,7 @@
         --start 2026-04-10 --end 2026-04-15 --travelers 2 \
         --budget 4000 --interests food,history
 
-Needs ANTHROPIC_API_KEY. Travel data comes from the mock provider unless
+Needs GROQ_API_KEY. Travel data comes from the mock provider unless
 TRAVELMATE_PROVIDER says otherwise.
 """
 
@@ -13,7 +13,7 @@ import json
 import sys
 from datetime import date
 
-import anthropic
+import groq
 
 from app.agent.planner import PlanningError, plan_trip
 from app.core.logging import configure_logging
@@ -66,7 +66,7 @@ def render(trip: PlannedTrip) -> str:
     if trip.summary:
         lines.append(trip.summary)
     lines.append("")
-    lines.append(f"[trip {trip.id} · {len(trip.tool_calls)} tool calls]")
+    lines.append(f"[trip {trip.id} · {len(trip.agent_trace)} agent step(s)]")
     return "\n".join(lines)
 
 
@@ -88,10 +88,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         trip = plan_trip(request)
-    except anthropic.AuthenticationError:
-        print("ANTHROPIC_API_KEY is missing or invalid.", file=sys.stderr)
+    except groq.AuthenticationError:
+        print("GROQ_API_KEY is missing or invalid.", file=sys.stderr)
         return 2
-    except (PlanningError, anthropic.APIError) as exc:
+    except (PlanningError, groq.APIError) as exc:
         print(f"Planning failed: {exc}", file=sys.stderr)
         return 1
 

@@ -71,10 +71,10 @@ class Itinerary(BaseModel):
 
 
 class PlannedTrip(BaseModel):
-    """An itinerary plus how the agent arrived at it."""
+    """An itinerary plus how the agent pipeline arrived at it."""
 
     id: str
     request: TripRequest
     itinerary: Itinerary
-    tool_calls: list[str] = Field(default_factory=list)
+    agent_trace: list[str] = Field(default_factory=list)
     summary: str = ""

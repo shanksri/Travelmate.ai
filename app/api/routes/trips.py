@@ -1,6 +1,6 @@
 import logging
 
-import anthropic
+import groq
 from fastapi import APIRouter, HTTPException, status
 
 from app.agent.planner import PlanningError, plan_trip
@@ -17,29 +17,30 @@ router = APIRouter(prefix="/trips", tags=["trips"])
 def create_plan(payload: PlanTripRequest) -> PlanTripResponse:
     """Plan a trip.
 
-    Defined `def`, not `async def`: planning is a blocking multi-call agent run,
-    so FastAPI runs it in a worker thread instead of stalling the event loop.
+    Defined `def`, not `async def`: planning runs the whole agent graph
+    (several blocking LLM calls), so FastAPI runs it in a worker thread
+    instead of stalling the event loop.
     """
     try:
         trip = plan_trip(payload)
-    except anthropic.AuthenticationError as exc:
-        logger.warning("anthropic auth failed: %s", exc)
+    except groq.AuthenticationError as exc:
+        logger.warning("groq auth failed: %s", exc)
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Claude credentials are missing or invalid — set ANTHROPIC_API_KEY.",
+            "Groq credentials are missing or invalid — set GROQ_API_KEY.",
         ) from exc
-    except anthropic.RateLimitError as exc:
+    except groq.RateLimitError as exc:
         raise HTTPException(
-            status.HTTP_429_TOO_MANY_REQUESTS, "Rate limited by the Claude API."
+            status.HTTP_429_TOO_MANY_REQUESTS, "Rate limited by the Groq API."
         ) from exc
-    except anthropic.APIStatusError as exc:
-        logger.error("claude api error %s: %s", exc.status_code, exc.message)
+    except groq.APIStatusError as exc:
+        logger.error("groq api error %s: %s", exc.status_code, exc.message)
         raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY, f"Claude API error: {exc.message}"
+            status.HTTP_502_BAD_GATEWAY, f"Groq API error: {exc.message}"
         ) from exc
-    except anthropic.APIConnectionError as exc:
+    except groq.APIConnectionError as exc:
         raise HTTPException(
-            status.HTTP_504_GATEWAY_TIMEOUT, "Could not reach the Claude API."
+            status.HTTP_504_GATEWAY_TIMEOUT, "Could not reach the Groq API."
         ) from exc
     except PlanningError as exc:
         logger.error("planning failed: %s", exc)

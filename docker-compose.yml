@@ -4,9 +4,9 @@ services:
     ports:
       - "8000:8000"
     environment:
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in your shell or .env}
-      TRAVELMATE_MODEL: ${TRAVELMATE_MODEL:-claude-opus-5}
-      TRAVELMATE_EFFORT: ${TRAVELMATE_EFFORT:-high}
+      GROQ_API_KEY: ${GROQ_API_KEY:?set GROQ_API_KEY in your shell or .env}
+      TRAVELMATE_MODEL: ${TRAVELMATE_MODEL:-llama-3.3-70b-versatile}
+      TRAVELMATE_TEMPERATURE: ${TRAVELMATE_TEMPERATURE:-0.3}
       TRAVELMATE_PROVIDER: ${TRAVELMATE_PROVIDER:-mock}
       TRAVELMATE_LOG_LEVEL: ${TRAVELMATE_LOG_LEVEL:-INFO}
     healthcheck:

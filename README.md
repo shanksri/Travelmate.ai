@@ -1,13 +1,51 @@
-# travelmate.ai
+# travelmate.ai — TripMate AI
 
-An agentic trip planner. You give it dates, a party size and some constraints;
-Claude researches with travel tools and commits to a concrete day-by-day
-itinerary.
+A LangGraph multi-agent travel planner. You give it dates, a party size and
+some constraints; four agents — flight, hotel, itinerary, and final response —
+research and reason with Groq's Llama 3, coordinated through a shared
+`TravelState`, and hand back a concrete day-by-day itinerary.
 
-The agent is not asked to write a plan in prose. It researches, then calls
-`submit_itinerary` with a structured plan that is validated by Pydantic **while
-the agent is still in the loop** — so a malformed plan comes back to the model
-as a correctable error rather than surfacing later as a 500.
+## Architecture
+
+```
+                         ┌──────────────────────┐
+   TripRequest ────────▶ │ resolve_destination  │  (only runs if no
+                         └──────────┬───────────┘   destination was given)
+                                    │
+                     ┌──────────────┴──────────────┐
+                     ▼                              ▼
+            ┌─────────────────┐           ┌─────────────────┐
+            │  flight_agent    │           │  hotel_agent     │
+            │  search_flights  │           │  search_lodging  │
+            └────────┬────────┘           └────────┬────────┘
+                     └──────────────┬──────────────┘
+                                    ▼
+                         ┌──────────────────────┐
+                         │   itinerary_agent     │  search_attractions,
+                         │  (JSON-mode, retries) │  get_weather_outlook
+                         └──────────┬───────────┘
+                                    ▼
+                         ┌──────────────────────┐
+                         │ final_response_agent  │
+                         └──────────┬───────────┘
+                                    ▼
+                              PlannedTrip
+```
+
+Flight and hotel search run in parallel — neither depends on the other — then
+both feed the itinerary agent, which needs both before it can plan a single
+day. Every node is a plain `state -> dict` function (see
+[app/agent/nodes.py](app/agent/nodes.py)); LangGraph merges each node's return
+value into the shared `TravelState` between steps
+([app/agent/state.py](app/agent/state.py)).
+
+The itinerary agent is asked for JSON and nothing else
+(`response_format: json_object`); its response is Pydantic-validated **while
+the agent is still in the loop**
+([app/agent/itinerary_json.py](app/agent/itinerary_json.py)) — a malformed or
+day-count-mismatched plan is fed back to the model as a correction request
+instead of surfacing later as a 500. It gets `TRAVELMATE_MAX_ITINERARY_RETRIES`
+attempts (default 2) before the whole run fails with a `PlanningError`.
 
 ## Quick start
 
@@ -15,7 +53,7 @@ as a correctable error rather than surfacing later as a 500.
 python -m venv .venv
 .venv/Scripts/activate          # Windows;  source .venv/bin/activate elsewhere
 pip install -e ".[dev]"
-cp .env.example .env            # then put your ANTHROPIC_API_KEY in it
+cp .env.example .env            # then put your GROQ_API_KEY in it
 ```
 
 Plan a trip from the command line:
@@ -45,58 +83,35 @@ curl -X POST localhost:8000/trips/plan -H 'content-type: application/json' -d '{
 }'
 ```
 
-Leave `destination` out and the agent will pick one and justify it.
+Leave `destination` out and `resolve_destination` will pick one and say why.
 
 Interactive docs are at `/docs`.
-
-## How it works
-
-```
-TripRequest
-    │
-    ▼
-app/agent/planner.py ── Claude (tool_runner, adaptive thinking)
-    │                       │
-    │                       ├── search_destinations   ┐
-    │                       ├── get_weather_outlook   │  read-only lookups,
-    │                       ├── search_flights        ├─ bound to this request
-    │                       ├── search_lodging        │  (app/agent/tools/)
-    │                       ├── search_attractions    ┘
-    │                       │
-    │                       └── submit_itinerary ──▶ validated Itinerary
-    ▼
-PlannedTrip  →  app/store.py
-```
-
-The research tools are **built per request**, closing over the provider and the
-trip's own dates. The model never restates context it already gave us, and it
-cannot reach a data source we did not hand it.
-
-The planner owns the stopping conditions: an iteration cap, a single retry if
-the agent finishes without submitting, and a hard `PlanningError` if it still
-has not. The message history is mirrored as the loop runs, which is what makes
-that retry a continuation rather than a fresh start.
 
 ### Layout
 
 | Path | What lives there |
 |---|---|
-| `app/agent/planner.py` | The agentic loop and its stopping conditions |
-| `app/agent/prompts.py` | System prompt and the per-request briefing |
-| `app/agent/tools/` | Research tools and the terminal `submit_itinerary` |
+| `app/agent/graph.py` | Wires the five nodes into the LangGraph `StateGraph` |
+| `app/agent/nodes.py` | The coordinator step and the four agents |
+| `app/agent/state.py` | `TravelState` — the dict LangGraph threads through every node |
+| `app/agent/llm.py` | `GroqLLM` — the one call every node makes, narrowed to `.complete()` so it's fakeable in tests |
+| `app/agent/prompts.py` | Each agent's system prompt and the itinerary JSON schema |
+| `app/agent/itinerary_json.py` | Parses and Pydantic-validates the itinerary agent's JSON |
+| `app/agent/planner.py` | `plan_trip()` — builds the graph, invokes it, maps the result to a `PlannedTrip` |
 | `app/providers/` | The travel data seam (`TravelProvider` Protocol) |
-| `app/models/itinerary.py` | `TripRequest`, `Itinerary` and friends |
+| `app/models/itinerary.py` | `TripRequest`, `Itinerary`, `PlannedTrip` |
 | `app/api/` | FastAPI routes and wire schemas |
 | `app/store.py` | Trip persistence (in-memory today) |
 
 ## Travel data
 
 `TRAVELMATE_PROVIDER=mock` (the default) serves deterministic, seeded travel
-data — plausible fiction, not quotes — so the whole system runs end to end with
+data — plausible fiction, not quotes — standing in for AviationStack, Google
+Places/Maps, and Tavily Search alike, so the whole system runs end to end with
 no third-party keys and the tests never touch a network. Real integrations
-implement the `TravelProvider` Protocol in `app/providers/base.py` and get wired
-into `get_provider()`; `provider="live"` raises until one exists, so it can
-never quietly serve invented prices as real ones.
+implement the `TravelProvider` Protocol in `app/providers/base.py` and get
+wired into `get_provider()`; `provider="live"` raises until one exists, so it
+can never quietly serve invented prices as real ones.
 
 ## Configuration
 
@@ -105,11 +120,11 @@ Every setting is an environment variable prefixed `TRAVELMATE_`, or a line in
 
 | Variable | Default | Notes |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | — | Required (no prefix; read by the SDK) |
-| `TRAVELMATE_MODEL` | `claude-opus-5` | |
-| `TRAVELMATE_EFFORT` | `high` | `low` … `max`; trades cost against thoroughness |
-| `TRAVELMATE_MAX_TOKENS` | `16000` | Per assistant turn |
-| `TRAVELMATE_MAX_TOOL_ITERATIONS` | `24` | Loop safety rail |
+| `GROQ_API_KEY` | — | Required (no prefix; read by the Groq SDK) |
+| `TRAVELMATE_MODEL` | `llama-3.3-70b-versatile` | Any Groq-hosted chat model |
+| `TRAVELMATE_TEMPERATURE` | `0.3` | |
+| `TRAVELMATE_MAX_TOKENS` | `4096` | Per LLM call |
+| `TRAVELMATE_MAX_ITINERARY_RETRIES` | `2` | Extra attempts after a schema-invalid itinerary |
 | `TRAVELMATE_PROVIDER` | `mock` | `mock` or `live` |
 
 ## Tests
@@ -119,9 +134,12 @@ pytest
 ruff check .
 ```
 
-The suite runs offline. `tests/conftest.py` has a fake tool runner that replays
-a scripted conversation while calling the *real* tools the planner built, so
-the loop, the tools and the validation are all exercised without an API key.
+The suite runs offline. `tests/conftest.py` has a `FakeLLM` that returns
+scripted responses — either in call order, or routed by a substring of the
+system prompt so a single fake can drive flight and hotel search running in
+parallel without caring which one calls first. It calls the *real* nodes and
+the *real* mock provider, so the graph wiring, the agents, and the itinerary
+validation are all exercised without an API key.
 
 ## Docker
 
@@ -131,6 +149,10 @@ docker compose up --build
 
 ## Status
 
-Early. The agent loop, tools, validation, API and tests are real; the travel
-data is mocked and trips live in memory. Next up: a live provider behind the
-Protocol, persistence, and streaming the plan as it is built.
+Early. The agent graph, nodes, validation, API and tests are real; the travel
+data is mocked and trips live in memory. Next up: real providers behind the
+`TravelProvider` Protocol (AviationStack, Google Places/Maps, Tavily), and
+PostgreSQL for conversation history and long-term state.
+
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the original diagram this was built
+from and what's implemented vs. deferred.

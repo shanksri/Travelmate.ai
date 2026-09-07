@@ -8,7 +8,9 @@ configure_logging()
 app = FastAPI(
     title="travelmate.ai",
     version="0.1.0",
-    description="An agentic trip planner: Claude plans itineraries by calling travel tools.",
+    description=(
+        "TripMate AI: a LangGraph multi-agent travel planner backed by Groq's Llama 3."
+    ),
 )
 
 app.include_router(health.router)

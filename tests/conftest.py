@@ -1,6 +1,5 @@
 import json
 from datetime import date
-from types import SimpleNamespace
 
 import pytest
 
@@ -61,66 +60,37 @@ def itinerary_payload(request: TripRequest) -> dict:
     }
 
 
-def text_block(text: str) -> SimpleNamespace:
-    return SimpleNamespace(type="text", text=text)
+def itinerary_json(request: TripRequest, **overrides) -> str:
+    return json.dumps(itinerary_payload(request) | overrides)
 
 
-def tool_use_block(name: str, tool_input: dict) -> SimpleNamespace:
-    return SimpleNamespace(
-        type="tool_use", name=name, id=f"toolu_{name}", input=tool_input
-    )
+class FakeLLM:
+    """A scripted stand-in for `app.agent.llm.LLM`.
 
-
-class FakeRunner:
-    """Stands in for the SDK tool runner.
-
-    It yields the scripted messages and, for any `tool_use` block, calls the
-    real tool the planner built — so the tools, the sink and the loop wiring
-    are all exercised without touching the network.
+    Responses can be queued generically (consumed in call order) or targeted
+    at one agent by a substring of its system prompt — the latter is what lets
+    a single fake drive the whole graph without caring what order the parallel
+    flight/hotel nodes happen to run in.
     """
 
-    def __init__(self, tools: list, script: list[list[SimpleNamespace]]) -> None:
-        self._tools = {tool.name: tool for tool in tools}
-        self._script = script
-        self._pending: dict | None = None
-
-    def __iter__(self):
-        for blocks in self._script:
-            stop = "tool_use" if any(b.type == "tool_use" for b in blocks) else "end_turn"
-            results = []
-            for block in blocks:
-                if block.type == "tool_use":
-                    output = self._tools[block.name].call(block.input)
-                    results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": output,
-                        }
-                    )
-            self._pending = {"role": "user", "content": results} if results else None
-            yield SimpleNamespace(content=blocks, stop_reason=stop)
-
-    def generate_tool_call_response(self) -> dict | None:
-        return self._pending
-
-
-class FakeClient:
-    """A stub `anthropic.Anthropic` whose tool_runner replays a script."""
-
-    def __init__(self, scripts: list[list[list[SimpleNamespace]]]) -> None:
-        self._scripts = list(scripts)
+    def __init__(
+        self,
+        responses: list[str] | None = None,
+        by_system: dict[str, list[str]] | None = None,
+    ) -> None:
+        self._queue = list(responses or [])
+        self._by_system = {key: list(value) for key, value in (by_system or {}).items()}
         self.calls: list[dict] = []
-        self.beta = SimpleNamespace(messages=SimpleNamespace(tool_runner=self._runner))
 
-    def _runner(self, **kwargs):
-        # Snapshot the history: the planner keeps appending to the same list,
-        # and the real SDK reads it once, at call time.
-        self.calls.append(kwargs | {"messages": list(kwargs["messages"])})
-        script = self._scripts.pop(0) if self._scripts else [[text_block("done")]]
-        return FakeRunner(kwargs["tools"], script)
+    def complete(self, *, system: str, user: str, json_mode: bool = False) -> str:
+        self.calls.append({"system": system, "user": user, "json_mode": json_mode})
 
+        for key, queue in self._by_system.items():
+            if key in system:
+                if not queue:
+                    raise AssertionError(f"FakeLLM ran out of responses for {key!r}")
+                return queue.pop(0)
 
-def submit_call(request: TripRequest, **overrides) -> SimpleNamespace:
-    payload = itinerary_payload(request) | overrides
-    return tool_use_block("submit_itinerary", {"itinerary_json": json.dumps(payload)})
+        if not self._queue:
+            raise AssertionError("FakeLLM ran out of scripted responses")
+        return self._queue.pop(0)
