@@ -10,5 +10,5 @@ router = APIRouter(tags=["health"])
 def health() -> HealthResponse:
     settings = get_settings()
     return HealthResponse(
-        status="ok", model=settings.model, provider=settings.provider
+        status="ok", model=settings.model, provider=settings.provider, store=settings.store
     )

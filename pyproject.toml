@@ -1,15 +1,17 @@
 [project]
 name = "travelmate-ai"
 version = "0.1.0"
-description = "TripMate AI: a LangGraph multi-agent travel planner backed by Groq's Llama 3."
+description = "TripMate AI: a LangGraph multi-agent travel planner backed by OpenAI."
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",
-    "groq>=0.11.0",
     "httpx>=0.27.0",
     "langgraph>=0.2.0",
+    "openai>=1.50.0",
+    "psycopg[binary]>=3.2.0",
     "pydantic>=2.9.0",
     "pydantic-settings>=2.4.0",
+    "sqlalchemy>=2.0.0",
     "uvicorn[standard]>=0.30.6",
 ]
 

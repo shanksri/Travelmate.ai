@@ -1,6 +1,6 @@
 import logging
 
-import groq
+import openai
 from fastapi import APIRouter, HTTPException, status
 
 from app.agent.planner import PlanningError, plan_trip
@@ -23,24 +23,24 @@ def create_plan(payload: PlanTripRequest) -> PlanTripResponse:
     """
     try:
         trip = plan_trip(payload)
-    except groq.AuthenticationError as exc:
-        logger.warning("groq auth failed: %s", exc)
+    except openai.AuthenticationError as exc:
+        logger.warning("openai auth failed: %s", exc)
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Groq credentials are missing or invalid — set GROQ_API_KEY.",
+            "OpenAI credentials are missing or invalid — set OPENAI_API_KEY.",
         ) from exc
-    except groq.RateLimitError as exc:
+    except openai.RateLimitError as exc:
         raise HTTPException(
-            status.HTTP_429_TOO_MANY_REQUESTS, "Rate limited by the Groq API."
+            status.HTTP_429_TOO_MANY_REQUESTS, "Rate limited by the OpenAI API."
         ) from exc
-    except groq.APIStatusError as exc:
-        logger.error("groq api error %s: %s", exc.status_code, exc.message)
+    except openai.APIStatusError as exc:
+        logger.error("openai api error %s: %s", exc.status_code, exc.message)
         raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY, f"Groq API error: {exc.message}"
+            status.HTTP_502_BAD_GATEWAY, f"OpenAI API error: {exc.message}"
         ) from exc
-    except groq.APIConnectionError as exc:
+    except openai.APIConnectionError as exc:
         raise HTTPException(
-            status.HTTP_504_GATEWAY_TIMEOUT, "Could not reach the Groq API."
+            status.HTTP_504_GATEWAY_TIMEOUT, "Could not reach the OpenAI API."
         ) from exc
     except PlanningError as exc:
         logger.error("planning failed: %s", exc)

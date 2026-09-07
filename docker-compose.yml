@@ -1,16 +1,47 @@
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: travelmate
+      POSTGRES_PASSWORD: travelmate
+      POSTGRES_DB: travelmate
+    ports:
+      # Host port 5433, not 5432: this machine already runs another project's
+      # Postgres on 5432. Only the host side needs to differ — the api
+      # service below talks to "db:5432" on Docker's internal network either
+      # way.
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U travelmate -d travelmate"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   api:
     build: .
     ports:
       - "8000:8000"
     environment:
-      GROQ_API_KEY: ${GROQ_API_KEY:?set GROQ_API_KEY in your shell or .env}
-      TRAVELMATE_MODEL: ${TRAVELMATE_MODEL:-llama-3.3-70b-versatile}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY in your shell or .env}
+      TRAVELMATE_MODEL: ${TRAVELMATE_MODEL:-gpt-4}
       TRAVELMATE_TEMPERATURE: ${TRAVELMATE_TEMPERATURE:-0.3}
       TRAVELMATE_PROVIDER: ${TRAVELMATE_PROVIDER:-mock}
       TRAVELMATE_LOG_LEVEL: ${TRAVELMATE_LOG_LEVEL:-INFO}
+      TRAVELMATE_STORE: postgres
+      # "db" is the service name above, resolved on Docker's internal network
+      # — not the same host as TRAVELMATE_DATABASE_URL in .env.example, which
+      # is written for running the api outside Docker.
+      TRAVELMATE_DATABASE_URL: postgresql+psycopg://travelmate:travelmate@db:5432/travelmate
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
+
+volumes:
+  pgdata:

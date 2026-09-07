@@ -3,10 +3,10 @@
 import logging
 import uuid
 
-import groq
+import openai
 
 from app.agent.graph import build_planner_graph
-from app.agent.llm import LLM, GroqLLM
+from app.agent.llm import LLM, OpenAILLM
 from app.agent.state import initial_state
 from app.core.config import Settings, get_settings
 from app.models.itinerary import PlannedTrip, TripRequest
@@ -31,8 +31,8 @@ def plan_trip(
     agent graph. Blocking; expect several LLM calls and tens of seconds."""
     settings = settings or get_settings()
     provider = provider or get_provider()
-    llm = llm or GroqLLM(
-        groq.Groq(),
+    llm = llm or OpenAILLM(
+        openai.OpenAI(),
         model=settings.model,
         temperature=settings.temperature,
         max_tokens=settings.max_tokens,

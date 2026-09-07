@@ -11,8 +11,8 @@ class Settings(BaseSettings):
         env_file=".env", env_prefix="TRAVELMATE_", extra="ignore"
     )
 
-    # The Groq-hosted Llama 3 model every agent node reasons with.
-    model: str = "llama-3.3-70b-versatile"
+    # The OpenAI model every agent node reasons with.
+    model: str = "gpt-4"
     temperature: float = 0.3
     max_tokens: int = 4096
 
@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     # "mock" serves deterministic travel data so the agent runs without any
     # third-party keys. "live" swaps in real provider clients.
     provider: Literal["mock", "live"] = "mock"
+
+    # "memory" needs no setup and is what the tests run against. "postgres"
+    # persists trips across restarts — see docker-compose.yml for a ready-made
+    # Postgres service, and app/store.py for the SqlTripStore it talks to.
+    store: Literal["memory", "postgres"] = "memory"
+    database_url: str = "postgresql+psycopg://travelmate:travelmate@localhost:5432/travelmate"
 
     log_level: str = "INFO"
 

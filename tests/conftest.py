@@ -1,10 +1,20 @@
 import json
+import os
 from datetime import date
 
 import pytest
 
-from app.models.itinerary import TripRequest
-from app.providers.mock import MockTravelProvider
+# Force safe defaults before any app module can call get_settings() and cache
+# a Settings instance for the rest of the run. Without this, a developer's
+# local .env (e.g. TRAVELMATE_STORE=postgres pointing at a real database) leaks
+# into the test session — pydantic-settings reads .env directly, so it can't
+# be avoided just by not exporting these as real environment variables.
+# setdefault, not assignment: an intentional CI override still wins.
+os.environ.setdefault("TRAVELMATE_STORE", "memory")
+os.environ.setdefault("TRAVELMATE_PROVIDER", "mock")
+
+from app.models.itinerary import Itinerary, PlannedTrip, TripRequest  # noqa: E402
+from app.providers.mock import MockTravelProvider  # noqa: E402
 
 
 @pytest.fixture
@@ -62,6 +72,23 @@ def itinerary_payload(request: TripRequest) -> dict:
 
 def itinerary_json(request: TripRequest, **overrides) -> str:
     return json.dumps(itinerary_payload(request) | overrides)
+
+
+def sample_planned_trip(request: TripRequest, trip_id: str = "abc123") -> PlannedTrip:
+    """A minimal but valid `PlannedTrip`, for tests that need one stored
+    without running the whole agent graph."""
+    return PlannedTrip(
+        id=trip_id,
+        request=request,
+        itinerary=Itinerary(
+            destination=request.destination or "Lisbon, Portugal",
+            start_date=request.start_date,
+            end_date=request.end_date,
+            travelers=request.travelers,
+            days=[],
+        ),
+        summary="A short stay.",
+    )
 
 
 class FakeLLM:

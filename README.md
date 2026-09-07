@@ -2,8 +2,8 @@
 
 A LangGraph multi-agent travel planner. You give it dates, a party size and
 some constraints; four agents — flight, hotel, itinerary, and final response —
-research and reason with Groq's Llama 3, coordinated through a shared
-`TravelState`, and hand back a concrete day-by-day itinerary.
+research and reason with OpenAI, coordinated through a shared `TravelState`,
+and hand back a concrete day-by-day itinerary.
 
 ## Architecture
 
@@ -53,7 +53,7 @@ attempts (default 2) before the whole run fails with a `PlanningError`.
 python -m venv .venv
 .venv/Scripts/activate          # Windows;  source .venv/bin/activate elsewhere
 pip install -e ".[dev]"
-cp .env.example .env            # then put your GROQ_API_KEY in it
+cp .env.example .env            # then put your OPENAI_API_KEY in it
 ```
 
 > **Windows + PowerShell:** if activation is blocked with
@@ -76,7 +76,7 @@ uvicorn app.main:app --reload
 
 | Method | Path | What it does |
 |---|---|---|
-| `GET` | `/health` | Liveness, plus the configured model and provider |
+| `GET` | `/health` | Liveness, plus the configured model, provider and store |
 | `POST` | `/trips/plan` | Plan a trip; returns the stored `PlannedTrip` |
 | `GET` | `/trips` | Every trip planned since the process started |
 | `GET` | `/trips/{id}` | One trip |
@@ -100,14 +100,14 @@ Interactive docs are at `/docs`.
 | `app/agent/graph.py` | Wires the five nodes into the LangGraph `StateGraph` |
 | `app/agent/nodes.py` | The coordinator step and the four agents |
 | `app/agent/state.py` | `TravelState` — the dict LangGraph threads through every node |
-| `app/agent/llm.py` | `GroqLLM` — the one call every node makes, narrowed to `.complete()` so it's fakeable in tests |
+| `app/agent/llm.py` | `OpenAILLM` — the one call every node makes, narrowed to `.complete()` so it's fakeable in tests |
 | `app/agent/prompts.py` | Each agent's system prompt and the itinerary JSON schema |
 | `app/agent/itinerary_json.py` | Parses and Pydantic-validates the itinerary agent's JSON |
 | `app/agent/planner.py` | `plan_trip()` — builds the graph, invokes it, maps the result to a `PlannedTrip` |
 | `app/providers/` | The travel data seam (`TravelProvider` Protocol) |
 | `app/models/itinerary.py` | `TripRequest`, `Itinerary`, `PlannedTrip` |
 | `app/api/` | FastAPI routes and wire schemas |
-| `app/store.py` | Trip persistence (in-memory today) |
+| `app/store.py` | `TripStore` Protocol, `InMemoryTripStore`, and `SqlTripStore` (Postgres via Docker, or any SQLAlchemy engine) |
 
 ## Travel data
 
@@ -126,12 +126,14 @@ Every setting is an environment variable prefixed `TRAVELMATE_`, or a line in
 
 | Variable | Default | Notes |
 |---|---|---|
-| `GROQ_API_KEY` | — | Required (no prefix; read by the Groq SDK) |
-| `TRAVELMATE_MODEL` | `llama-3.3-70b-versatile` | Any Groq-hosted chat model |
+| `OPENAI_API_KEY` | — | Required (no prefix; read by the OpenAI SDK) |
+| `TRAVELMATE_MODEL` | `gpt-4` | Any OpenAI chat model |
 | `TRAVELMATE_TEMPERATURE` | `0.3` | |
 | `TRAVELMATE_MAX_TOKENS` | `4096` | Per LLM call |
 | `TRAVELMATE_MAX_ITINERARY_RETRIES` | `2` | Extra attempts after a schema-invalid itinerary |
 | `TRAVELMATE_PROVIDER` | `mock` | `mock` or `live` |
+| `TRAVELMATE_STORE` | `memory` | `memory` or `postgres` |
+| `TRAVELMATE_DATABASE_URL` | `postgresql+psycopg://travelmate:travelmate@localhost:5433/travelmate` | Only read when `TRAVELMATE_STORE=postgres` |
 
 ## Tests
 
@@ -147,18 +149,35 @@ parallel without caring which one calls first. It calls the *real* nodes and
 the *real* mock provider, so the graph wiring, the agents, and the itinerary
 validation are all exercised without an API key.
 
+`tests/test_store.py` exercises `SqlTripStore`'s actual SQL against an
+in-memory SQLite engine — no Docker needed to test the query logic itself;
+`docker-compose.yml` is what points that same class at a real Postgres.
+`conftest.py` also forces `TRAVELMATE_STORE=memory` before any test can read a
+developer's local `.env`, so a machine configured for Postgres never makes the
+suite try to open a real database connection.
+
 ## Docker
 
 ```bash
 docker compose up --build
 ```
 
+Brings up two services: `db` (Postgres 16, host port **5433** — not 5432, in
+case something else on your machine already uses it) and `api` (built from
+the `Dockerfile`, `TRAVELMATE_STORE=postgres` inside the container talking to
+`db:5432` on Docker's internal network). Requires `OPENAI_API_KEY` in your
+shell or `.env`.
+
+To run the API on your host instead while still using a dockerized database:
+`docker compose up db` (or add `-d` to run it in the background), then set
+`TRAVELMATE_STORE=postgres` and use `localhost:5433` in
+`TRAVELMATE_DATABASE_URL` — that's what `.env.example` is set up for.
+
 ## Status
 
-Early. The agent graph, nodes, validation, API and tests are real; the travel
-data is mocked and trips live in memory. Next up: real providers behind the
-`TravelProvider` Protocol (AviationStack, Google Places/Maps, Tavily), and
-PostgreSQL for conversation history and long-term state.
+Early. The agent graph, nodes, validation, Postgres persistence, API and tests
+are real; travel data is still mocked. Next up: real providers behind the
+`TravelProvider` Protocol (AviationStack, Google Places/Maps, Tavily).
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the original diagram this was built
 from and what's implemented vs. deferred.

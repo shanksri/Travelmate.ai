@@ -4,7 +4,7 @@
         --start 2026-04-10 --end 2026-04-15 --travelers 2 \
         --budget 4000 --interests food,history
 
-Needs GROQ_API_KEY. Travel data comes from the mock provider unless
+Needs OPENAI_API_KEY. Travel data comes from the mock provider unless
 TRAVELMATE_PROVIDER says otherwise.
 """
 
@@ -13,7 +13,7 @@ import json
 import sys
 from datetime import date
 
-import groq
+import openai
 
 from app.agent.planner import PlanningError, plan_trip
 from app.core.logging import configure_logging
@@ -88,10 +88,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         trip = plan_trip(request)
-    except groq.AuthenticationError:
-        print("GROQ_API_KEY is missing or invalid.", file=sys.stderr)
+    except openai.AuthenticationError:
+        print("OPENAI_API_KEY is missing or invalid.", file=sys.stderr)
         return 2
-    except (PlanningError, groq.APIError) as exc:
+    except (PlanningError, openai.APIError) as exc:
         print(f"Planning failed: {exc}", file=sys.stderr)
         return 1
 

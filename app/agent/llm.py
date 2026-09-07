@@ -1,25 +1,25 @@
 """The one call every agent node makes into the LLM.
 
 Narrowing to a single `complete()` method — instead of handing nodes the raw
-Groq client — is what makes each node testable with a scripted fake instead of
-a real API key.
+OpenAI client — is what makes each node testable with a scripted fake instead
+of a real API key.
 """
 
 from typing import Protocol
 
-import groq
+import openai
 
 
 class LLM(Protocol):
     def complete(self, *, system: str, user: str, json_mode: bool = False) -> str: ...
 
 
-class GroqLLM:
-    """Wraps one Groq chat-completion call, OpenAI-compatible under the hood."""
+class OpenAILLM:
+    """Wraps one OpenAI chat-completion call."""
 
     def __init__(
         self,
-        client: groq.Groq,
+        client: openai.OpenAI,
         model: str,
         temperature: float = 0.3,
         max_tokens: int = 4096,

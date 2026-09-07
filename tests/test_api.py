@@ -1,10 +1,11 @@
 from datetime import date
 
 import pytest
+from conftest import sample_planned_trip
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.models.itinerary import Itinerary, PlannedTrip, TripRequest
+from app.models.itinerary import TripRequest
 from app.store import get_store
 
 
@@ -17,6 +18,7 @@ def test_health_reports_the_configured_model(client):
     body = client.get("/health").json()
     assert body["status"] == "ok"
     assert body["provider"] == "mock"
+    assert body["store"] == "memory"
 
 
 def test_plan_rejects_backwards_dates(client):
@@ -32,19 +34,7 @@ def test_unknown_trip_is_a_404(client):
 
 
 def test_saved_trips_are_retrievable(client, trip_request):
-    trip = PlannedTrip(
-        id="abc123",
-        request=trip_request,
-        itinerary=Itinerary(
-            destination="Lisbon, Portugal",
-            start_date=date(2026, 4, 10),
-            end_date=date(2026, 4, 13),
-            travelers=2,
-            days=[],
-        ),
-        summary="A short stay.",
-    )
-    get_store().save(trip)
+    get_store().save(sample_planned_trip(trip_request))
 
     body = client.get("/trips/abc123").json()
     assert body["itinerary"]["destination"] == "Lisbon, Portugal"

@@ -13,7 +13,7 @@ from app.core.config import Settings
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(model="llama-3.3-70b-versatile", max_itinerary_retries=2)
+    return Settings(model="gpt-4", max_itinerary_retries=2)
 
 
 def happy_path_llm(trip_request) -> FakeLLM:

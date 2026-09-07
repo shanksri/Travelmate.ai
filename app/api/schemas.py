@@ -25,3 +25,4 @@ class HealthResponse(BaseModel):
     status: str
     model: str
     provider: str
+    store: str
