@@ -1,0 +1,16 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in your shell or .env}
+      TRAVELMATE_MODEL: ${TRAVELMATE_MODEL:-claude-opus-5}
+      TRAVELMATE_EFFORT: ${TRAVELMATE_EFFORT:-high}
+      TRAVELMATE_PROVIDER: ${TRAVELMATE_PROVIDER:-mock}
+      TRAVELMATE_LOG_LEVEL: ${TRAVELMATE_LOG_LEVEL:-INFO}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
