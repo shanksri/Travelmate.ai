@@ -11,8 +11,10 @@ class Settings(BaseSettings):
         env_file=".env", env_prefix="TRAVELMATE_", extra="ignore"
     )
 
-    # The OpenAI model every agent node reasons with.
-    model: str = "gpt-4"
+    # The OpenAI model every agent node reasons with. Must support JSON mode
+    # (response_format={"type": "json_object"}) — the itinerary agent depends
+    # on it; plain "gpt-4" does not support it and fails with a 400.
+    model: str = "gpt-4o-mini"
     temperature: float = 0.3
     max_tokens: int = 4096
 
@@ -28,7 +30,7 @@ class Settings(BaseSettings):
     # persists trips across restarts — see docker-compose.yml for a ready-made
     # Postgres service, and app/store.py for the SqlTripStore it talks to.
     store: Literal["memory", "postgres"] = "memory"
-    database_url: str = "postgresql+psycopg://travelmate:travelmate@localhost:5432/travelmate"
+    database_url: str = "postgresql+psycopg://travelmate:travelmate@localhost:5433/travelmate"
 
     log_level: str = "INFO"
 
