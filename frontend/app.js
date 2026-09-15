@@ -165,6 +165,7 @@ function renderTrip(trip) {
     <div class="card trip-header">
       <h2>${escapeHtml(it.destination)} — ${escapeHtml(it.start_date)} to ${escapeHtml(it.end_date)}, ${it.travelers} traveller(s)</h2>
       ${total ? `<p class="trip-cost">Estimated total: ${it.currency} ${total}</p>` : ""}
+      ${trip.summary ? `<p class="summary">${escapeHtml(trip.summary)}</p>` : ""}
     </div>
 
     <div class="card">
@@ -195,12 +196,6 @@ function renderTrip(trip) {
             <h2>Notes</h2>
             <ul>${it.notes.map((n) => `<li>${escapeHtml(n)}</li>`).join("")}</ul>
           </div>`
-        : ""
-    }
-
-    ${
-      trip.summary
-        ? `<div class="card"><p class="summary">${escapeHtml(trip.summary)}</p></div>`
         : ""
     }
   `;

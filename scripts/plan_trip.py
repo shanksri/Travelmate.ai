@@ -62,6 +62,10 @@ def render(trip: PlannedTrip) -> str:
         lines.append(f"Estimated total: {it.currency} {it.total_estimated_cost:,.0f}")
     lines.append("")
 
+    if trip.summary:
+        lines.append(trip.summary)
+        lines.append("")
+
     lines.append("Flights:")
     if it.outbound_flight:
         lines.append(f"  Outbound: {_render_flight(it.outbound_flight)}")
@@ -104,9 +108,6 @@ def render(trip: PlannedTrip) -> str:
         lines.append("Notes:")
         lines.extend(f"  - {note}" for note in it.notes)
         lines.append("")
-    if trip.summary:
-        lines.append(trip.summary)
-    lines.append("")
     lines.append(f"[trip {trip.id} · {len(trip.agent_trace)} agent step(s)]")
     return "\n".join(lines)
 

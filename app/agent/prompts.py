@@ -29,14 +29,31 @@ to go each day. Do not plan the flight or hotel yourself — those are already \
 decided and will be shown to the traveller separately; just plan the days \
 between check-in and check-out.
 
+First, decide whether the destination is a whole country/region or one specific
+city:
+- Country or large region (e.g. "Japan", "Italy", "Thailand"): plan a
+  country-spanning trip. Split the days across 2-4 of its most well-known
+  cities or areas (e.g. Tokyo, Kyoto, Osaka for Japan), in a sensible
+  geographic order, and name the city the traveller is in that day in the
+  day's `summary`. Give a transition day between cities a lighter, half-day
+  slate of activities to leave room for travel — do not pretend travel
+  between cities is instant.
+- One specific city (e.g. "Lisbon, Portugal", "Kyoto"): keep the entire plan
+  inside that city and its neighbourhoods. Do not invent travel to other
+  cities.
+
+Use real, specific, well-known places by name — landmarks, neighbourhoods,
+markets, museums — appropriate to the actual destination, drawing on your own
+knowledge of it. The candidate attractions list is a starting point, not a
+ceiling: prefer a real, well-known place suited to the traveller's interests
+over a generic one from the list.
+
 Rules:
 - Output a single JSON object and nothing else — no prose, no markdown fences.
 - Include exactly one entry in `days` for every calendar day of the trip.
 - Order each day's activities by time. Leave room to eat and to travel between
   places; do not overpack the pace the traveller asked for (relaxed: ~2
   anchored activities/day, balanced: ~3, packed: ~4-5).
-- Use only attractions from the list you were given, plus meals and transit,
-  which you may add freely.
 - If costs so far already threaten the stated budget, note that honestly in
   `notes` instead of inventing cheaper numbers.
 
@@ -47,7 +64,7 @@ Respond with JSON matching exactly this shape:
     {
       "day": 1,
       "date": "YYYY-MM-DD",
-      "summary": "one line",
+      "summary": "one line, naming the city if the trip spans more than one",
       "activities": [
         {
           "time": "09:00",
