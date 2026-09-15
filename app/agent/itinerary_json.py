@@ -38,12 +38,15 @@ def parse_itinerary(raw_json: str, request: TripRequest) -> DraftItinerary:
             f"The JSON did not validate against the required schema: {problems}"
         ) from exc
 
-    expected_days = request.nights + 1
-    if len(draft.days) != expected_days:
+    expected_dates = request.dates
+    actual_dates = [day.date for day in draft.days]
+    if actual_dates != expected_dates:
+        wanted = json.dumps([d.isoformat() for d in expected_dates])
+        got = json.dumps([d.isoformat() for d in actual_dates])
         raise ItineraryValidationError(
-            f"The trip runs {request.start_date} to {request.end_date}, which is "
-            f"{expected_days} days, but you returned {len(draft.days)} entries in "
-            "`days`. Return one entry per calendar day."
+            f"`days` must have exactly one entry for each of these {len(expected_dates)} "
+            f"dates, in this order: {wanted}. You returned: {got}. Do not compute the date "
+            "range yourself — use exactly the dates listed above, one entry each."
         )
 
     return draft

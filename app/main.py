@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import openai
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -48,9 +48,22 @@ app.include_router(trips.router)
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
 
+@app.middleware("http")
+async def no_heuristic_caching_for_static(request: Request, call_next):
+    """Starlette's StaticFiles sends Last-Modified/ETag but no Cache-Control,
+    so browsers fall back to heuristic freshness and can serve a stale
+    index.html/app.js/style.css after an edit with no revalidation at all —
+    caught live during development. `no-cache` still allows a cheap 304 via
+    the ETag; it just stops the browser from skipping the check."""
+    response = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
-    return FileResponse(FRONTEND_DIR / "index.html")
+    return FileResponse(FRONTEND_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
 
 # --- Function calling for the four agents -----------------------------------

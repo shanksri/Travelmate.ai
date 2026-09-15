@@ -205,13 +205,23 @@ def build_itinerary_node(provider: TravelProvider, llm: LLM, max_retries: int):
             else "No lodging options were found."
         )
 
+        # Handed over pre-computed, not left for the model to derive from
+        # start/end dates — asking it to count calendar days itself invites
+        # exactly the off-by-one mistake parse_itinerary's validation exists
+        # to catch (seen live: a 5-day trip came back with 4 `days` entries,
+        # three attempts running, feedback notwithstanding).
+        trip_dates = [d.isoformat() for d in request.dates]
+
         base_prompt = (
             f"{describe_request(request)}\n"
             f"Destination: {destination}\n\n"
             f"Weather outlook: {json.dumps(weather, default=str)}\n\n"
             f"{flight_note}\n"
             f"{hotel_note}\n\n"
-            f"Candidate attractions: {json.dumps(attractions, default=str)}"
+            f"Candidate attractions: {json.dumps(attractions, default=str)}\n\n"
+            f"`days` must have exactly one entry for each of these {len(trip_dates)} dates, "
+            f"in this order — do not compute the date range yourself: "
+            f"{json.dumps(trip_dates)}"
         )
 
         feedback = ""

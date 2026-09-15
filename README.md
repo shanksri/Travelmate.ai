@@ -68,9 +68,11 @@ Plan a trip from the command line:
 python scripts/plan_trip.py --destination "Kyoto, Japan" --start 2026-04-10 --end 2026-04-15 --travelers 2 --budget 4000 --interests food,history
 ```
 
-Or run the API — and open `http://localhost:8000` for a form-based frontend
-(plain HTML/CSS/JS, no build step, no Node — the same process serves both the
-page and the API, so there's no CORS to configure):
+Or run the API — and open `http://localhost:8000` for the frontend (plain
+HTML/CSS/JS, no build step, no Node — the same process serves both the page
+and the API, so there's no CORS to configure): type a sentence like *"Plan a
+5 day Dubai trip from Dhaka with flights, hotels and sightseeing"* and it
+plans the whole trip:
 
 ```bash
 uvicorn app.main:app --reload
@@ -78,9 +80,10 @@ uvicorn app.main:app --reload
 
 | Method | Path | What it does |
 |---|---|---|
-| `GET` | `/` | The frontend — plan a trip and see the result rendered as a page |
+| `GET` | `/` | The frontend — plan a trip from one sentence, see the result rendered as a page |
 | `GET` | `/health` | Liveness, plus the configured model, provider and store |
-| `POST` | `/trips/plan` | Plan a trip; returns the stored `PlannedTrip` |
+| `POST` | `/trips/plan` | Plan a trip from structured parameters; returns the stored `PlannedTrip` |
+| `POST` | `/trips/plan-from-prompt` | Plan a trip from one free-text sentence — what the frontend calls |
 | `GET` | `/trips` | Every trip planned since the process started |
 | `GET` | `/trips/{id}` | One trip |
 
@@ -90,9 +93,16 @@ curl -X POST localhost:8000/trips/plan -H 'content-type: application/json' -d '{
   "travelers": 2, "origin": "Boston, MA",
   "budget_usd": 3500, "interests": ["food", "history"], "pace": "balanced"
 }'
+
+curl -X POST localhost:8000/trips/plan-from-prompt -H 'content-type: application/json' -d '{
+  "prompt": "Plan a complete 7 day Japan trip from Boston under $3000"
+}'
 ```
 
-Leave `destination` out and `resolve_destination` will pick one and say why.
+Leave `destination` out (structured) or unmentioned (free text) and
+`resolve_destination` will pick one and say why. A free-text prompt that
+leaves out dates gets a default 5-day trip starting two weeks out — see
+`app/agent/prompt_parser.py` for exactly what's inferred versus defaulted.
 
 Interactive docs are at `/docs`.
 
@@ -106,12 +116,13 @@ Interactive docs are at `/docs`.
 | `app/agent/llm.py` | `OpenAILLM` — the one call every node makes, narrowed to `.complete()` so it's fakeable in tests |
 | `app/agent/prompts.py` | Each agent's system prompt and the itinerary JSON schema |
 | `app/agent/itinerary_json.py` | Parses and Pydantic-validates the itinerary agent's JSON |
-| `app/agent/planner.py` | `plan_trip()` — builds the graph, invokes it, maps the result to a `PlannedTrip` |
+| `app/agent/prompt_parser.py` | Turns one free-text sentence into a `TripRequest` — what powers the frontend's single prompt box |
+| `app/agent/planner.py` | `plan_trip()` / `plan_trip_from_prompt()` — build the graph, invoke it, map the result to a `PlannedTrip` |
 | `app/providers/` | The travel data seam (`TravelProvider` Protocol) |
 | `app/models/itinerary.py` | `TripRequest`, `Itinerary`, `PlannedTrip` |
 | `app/api/` | FastAPI routes and wire schemas |
 | `app/store.py` | `TripStore` Protocol, `InMemoryTripStore`, and `SqlTripStore` (Postgres via Docker, or any SQLAlchemy engine) |
-| `frontend/` | The plain HTML/CSS/JS frontend — served by `app/main.py`, no build step |
+| `frontend/` | The plain HTML/CSS/JS frontend (dark theme, single prompt box) — served by `app/main.py`, no build step |
 | `scripts/run_server.py` | Launches the API from an absolute path — a workaround if something ever runs `uvicorn` from the wrong working directory and silently imports a same-named `app` package from elsewhere |
 
 ## Travel data

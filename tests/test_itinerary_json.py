@@ -30,5 +30,17 @@ def test_rejects_a_day_count_that_does_not_match_the_dates(trip_request):
     payload = json.loads(draft_itinerary_json(trip_request))
     payload["days"] = payload["days"][:2]
 
-    with pytest.raises(ItineraryValidationError, match="entries"):
+    with pytest.raises(ItineraryValidationError, match="exactly one entry"):
+        parse_itinerary(json.dumps(payload), trip_request)
+
+
+def test_rejects_the_right_count_with_the_wrong_dates(trip_request):
+    """The right number of entries is not enough — each one must land on the
+    actual calendar date it claims, in order. Regression: a live run once
+    returned the right count but a day short at the end and one duplicated
+    near the start, which a count-only check would have missed entirely."""
+    payload = json.loads(draft_itinerary_json(trip_request))
+    payload["days"][-1]["date"] = payload["days"][0]["date"]  # duplicate, not the last date
+
+    with pytest.raises(ItineraryValidationError, match="You returned"):
         parse_itinerary(json.dumps(payload), trip_request)

@@ -1,12 +1,26 @@
-const form = document.getElementById("trip-form");
+const form = document.getElementById("prompt-form");
+const promptInput = document.getElementById("prompt-input");
 const statusEl = document.getElementById("status");
 const resultEl = document.getElementById("result");
 const submitButton = document.getElementById("submit-button");
+const statusDot = document.getElementById("status-dot");
+const statusText = document.getElementById("status-text");
+const chipsEl = document.getElementById("chips");
+
+checkOnlineStatus();
+
+chipsEl.addEventListener("click", (event) => {
+  const chip = event.target.closest(".chip");
+  if (!chip) return;
+  promptInput.value = chip.dataset.prompt;
+  promptInput.focus();
+});
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
 
-  const payload = buildPayload(new FormData(form));
+  const prompt = promptInput.value.trim();
+  if (!prompt) return;
 
   resultEl.hidden = true;
   submitButton.disabled = true;
@@ -16,10 +30,10 @@ form.addEventListener("submit", async (event) => {
   );
 
   try {
-    const response = await fetch("/trips/plan", {
+    const response = await fetch("/trips/plan-from-prompt", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ prompt }),
     });
     const data = await response.json();
 
@@ -36,35 +50,18 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
-function buildPayload(formData) {
-  const payload = {
-    start_date: formData.get("start_date"),
-    end_date: formData.get("end_date"),
-    travelers: Number(formData.get("travelers")) || 1,
-    pace: formData.get("pace"),
-  };
-
-  const destination = formData.get("destination").trim();
-  if (destination) payload.destination = destination;
-
-  const origin = formData.get("origin").trim();
-  if (origin) payload.origin = origin;
-
-  const budget = formData.get("budget_usd");
-  if (budget) payload.budget_usd = Number(budget);
-
-  const interests = formData.get("interests").trim();
-  if (interests) {
-    payload.interests = interests
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
+async function checkOnlineStatus() {
+  try {
+    const response = await fetch("/health");
+    setOnlineStatus(response.ok);
+  } catch {
+    setOnlineStatus(false);
   }
+}
 
-  const notes = formData.get("notes").trim();
-  if (notes) payload.notes = notes;
-
-  return payload;
+function setOnlineStatus(isOnline) {
+  statusDot.className = `dot ${isOnline ? "online" : "offline"}`;
+  statusText.textContent = isOnline ? "Online" : "Offline";
 }
 
 function extractErrorMessage(data) {
@@ -151,7 +148,7 @@ function renderActivity(activity) {
 function renderDay(day) {
   return `
     <div class="day">
-      <h3>Day ${day.day} — ${escapeHtml(day.date)}: ${escapeHtml(day.summary)}</h3>
+      <h4>Day ${day.day} — ${escapeHtml(day.date)}: ${escapeHtml(day.summary)}</h4>
       ${day.activities.map(renderActivity).join("")}
     </div>`;
 }
@@ -162,6 +159,11 @@ function renderTrip(trip) {
 
   resultEl.hidden = false;
   resultEl.innerHTML = `
+    <div class="result-header">
+      <h2>Your Trip Plan</h2>
+      <span class="trip-id">Trip ID: ${escapeHtml(trip.id)}</span>
+    </div>
+
     <div class="card trip-header">
       <h2>${escapeHtml(it.destination)} — ${escapeHtml(it.start_date)} to ${escapeHtml(it.end_date)}, ${it.travelers} traveller(s)</h2>
       ${total ? `<p class="trip-cost">Estimated total: ${it.currency} ${total}</p>` : ""}
@@ -169,7 +171,7 @@ function renderTrip(trip) {
     </div>
 
     <div class="card">
-      <h2>Flights</h2>
+      <h3>Flights</h3>
       ${renderFlightRow("Outbound", it.outbound_flight)}
       ${renderFlightRow("Return", it.return_flight)}
     </div>
@@ -177,7 +179,7 @@ function renderTrip(trip) {
     ${
       it.lodging_options.length
         ? `<div class="card">
-            <h2>Where to stay</h2>
+            <h3>Where to stay</h3>
             <ul class="hotel-list">
               ${it.lodging_options.map((h, i) => renderHotelItem(h, i === 0)).join("")}
             </ul>
@@ -186,14 +188,14 @@ function renderTrip(trip) {
     }
 
     <div class="card">
-      <h2>Day by day</h2>
+      <h3>Day by day</h3>
       ${it.days.map(renderDay).join("")}
     </div>
 
     ${
       it.notes.length
         ? `<div class="card notes">
-            <h2>Notes</h2>
+            <h3>Notes</h3>
             <ul>${it.notes.map((n) => `<li>${escapeHtml(n)}</li>`).join("")}</ul>
           </div>`
         : ""

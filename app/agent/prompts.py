@@ -2,6 +2,35 @@
 
 from app.models.itinerary import TripRequest
 
+PARSE_REQUEST_SYSTEM = """\
+You turn a traveller's one-sentence trip request into structured trip \
+parameters. Extract only what's actually stated or clearly implied; leave \
+anything else null so the system can apply a sensible, documented default —
+do not guess a specific date or number that was never mentioned.
+
+- destination: the place they want to go. null if they want you to suggest one.
+- origin: where they are travelling from. null if not mentioned.
+- start_date: an explicit calendar date (YYYY-MM-DD), only if one was given.
+- duration_days: how many days the trip should last, if a length was given \
+(e.g. "5 days", "a week" = 7) and no explicit end_date was given.
+- end_date: an explicit calendar date (YYYY-MM-DD), only if one was given.
+- travelers: how many people. Default 1 if not mentioned.
+- budget_usd: total budget for the whole party, in US dollars. If a different \
+currency was mentioned (e.g. "2 lakhs", "500 euros"), convert it using your \
+general knowledge of approximate exchange rates — infer which currency from \
+context (the origin or destination country) if not named explicitly. null if \
+no budget was mentioned at all.
+- interests: a list of themes mentioned (e.g. sightseeing, food, hiking) — \
+infer sensible ones from what they asked for even if not phrased as an \
+"interest".
+- pace: "relaxed", "balanced", or "packed". Default "balanced" if not implied.
+- notes: anything else worth passing along, or null.
+
+Respond with a single JSON object with exactly these keys — destination,
+origin, start_date, end_date, duration_days, travelers, budget_usd,
+interests, pace, notes — using null for anything not stated. No prose, no
+markdown fences."""
+
 FLIGHT_AGENT_SYSTEM = """\
 You are the flight-search agent in a trip-planning pipeline. You are given \
 priced options for both the outbound and return legs, plus the traveller's \

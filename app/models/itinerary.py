@@ -4,7 +4,7 @@
 must produce one that validates, and the API returns exactly this shape.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -41,6 +41,14 @@ class TripRequest(BaseModel):
     @property
     def nights(self) -> int:
         return (self.end_date - self.start_date).days
+
+    @property
+    def dates(self) -> list[date]:
+        """One entry per calendar day of the trip, start to end inclusive —
+        the single source of truth for "which dates need a `days` entry",
+        shared by the itinerary prompt and its own response validation so
+        neither has to re-derive it (and risk disagreeing) from arithmetic."""
+        return [self.start_date + timedelta(days=offset) for offset in range(self.nights + 1)]
 
 
 class Activity(BaseModel):

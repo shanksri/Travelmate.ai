@@ -7,69 +7,42 @@
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <header>
-    <h1>travelmate.ai</h1>
-    <p class="subtitle">Tell it your trip. It plans the flights, the stay, and every day in between.</p>
-  </header>
-
   <main>
-    <form id="trip-form">
-      <div class="field-row">
-        <label>
-          Start date
-          <input type="date" name="start_date" required />
-        </label>
-        <label>
-          End date
-          <input type="date" name="end_date" required />
-        </label>
+    <section class="card prompt-card">
+      <div class="card-header">
+        <h1>Where do you want to go?</h1>
+        <span class="badge" id="status-badge">
+          <span class="dot" id="status-dot"></span>
+          <span id="status-text">Checking…</span>
+        </span>
       </div>
+      <p class="hint">Example: Plan a complete 7 day Japan trip from Boston under $3000.</p>
 
-      <div class="field-row">
-        <label>
-          Origin <span class="hint">(leave blank to skip flights)</span>
-          <input type="text" name="origin" placeholder="Boston, MA" />
-        </label>
-        <label>
-          Destination <span class="hint">(leave blank to let it choose)</span>
-          <input type="text" name="destination" placeholder="Lisbon, Portugal" />
-        </label>
+      <form id="prompt-form">
+        <textarea
+          id="prompt-input"
+          name="prompt"
+          rows="3"
+          maxlength="2000"
+          placeholder="Plan a 5 day Dubai trip from Dhaka with flights, hotels and sightseeing."
+          required
+        ></textarea>
+        <div class="form-footer">
+          <button type="submit" id="submit-button">Generate Plan</button>
+        </div>
+      </form>
+
+      <div class="chips" id="chips">
+        <button type="button" class="chip" data-prompt="Plan a complete 7 day Japan trip from Boston with flights, hotels and sightseeing, balanced pace, interested in food and history.">Japan Trip</button>
+        <button type="button" class="chip" data-prompt="Plan a 5 day Dubai trip from Dhaka with flights, hotels and sightseeing.">Dubai Trip</button>
+        <button type="button" class="chip" data-prompt="Plan a 6 day Thailand trip from Boston under $2500, relaxed pace, interested in beaches and food.">Thailand Trip</button>
+        <button type="button" class="chip" data-prompt="Plan a 4 day trip to Lisbon, Portugal from Boston, interested in food and history.">Lisbon Trip</button>
       </div>
-
-      <div class="field-row">
-        <label>
-          Travelers
-          <input type="number" name="travelers" min="1" max="20" value="1" required />
-        </label>
-        <label>
-          Budget (USD, total) <span class="hint">(optional)</span>
-          <input type="number" name="budget_usd" min="1" placeholder="3000" />
-        </label>
-        <label>
-          Pace
-          <select name="pace">
-            <option value="relaxed">Relaxed</option>
-            <option value="balanced" selected>Balanced</option>
-            <option value="packed">Packed</option>
-          </select>
-        </label>
-      </div>
-
-      <label class="field-block">
-        Interests <span class="hint">(comma-separated, optional)</span>
-        <input type="text" name="interests" placeholder="food, history, hiking" />
-      </label>
-
-      <label class="field-block">
-        Notes <span class="hint">(optional)</span>
-        <textarea name="notes" rows="2" placeholder="Anything else it should know"></textarea>
-      </label>
-
-      <button type="submit" id="submit-button">Plan my trip</button>
-    </form>
+    </section>
 
     <div id="status" class="status" hidden></div>
-    <div id="result" class="result" hidden></div>
+
+    <section id="result" class="result" hidden></section>
   </main>
 
   <script src="/static/app.js"></script>
