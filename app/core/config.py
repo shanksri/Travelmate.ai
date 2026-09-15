@@ -16,7 +16,14 @@ class Settings(BaseSettings):
     # on it; plain "gpt-4" does not support it and fails with a 400.
     model: str = "gpt-4o-mini"
     temperature: float = 0.3
-    max_tokens: int = 4096
+
+    # OpenAI's JSON mode guarantees syntactically valid JSON *except* when the
+    # response gets cut off by hitting this ceiling mid-generation — a longer
+    # or packed-pace itinerary can genuinely need more than a few thousand
+    # tokens. 16000 leaves real headroom under gpt-4o-mini's 16384-token cap
+    # without changing cost: OpenAI bills by tokens actually generated, not
+    # this ceiling.
+    max_tokens: int = 16000
 
     # How many times the itinerary agent may retry after a schema-invalid
     # response before the run fails outright.

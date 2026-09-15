@@ -22,7 +22,7 @@ class OpenAILLM:
         client: openai.OpenAI,
         model: str,
         temperature: float = 0.3,
-        max_tokens: int = 4096,
+        max_tokens: int = 16000,
     ) -> None:
         self._client = client
         self._model = model
