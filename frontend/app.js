@@ -139,9 +139,12 @@ function renderActivity(activity) {
   const where = activity.location ? ` @ ${escapeHtml(activity.location)}` : "";
   return `
     <div class="activity">
-      <span class="activity-time">${escapeHtml(activity.time)}</span>
-      <span>${escapeHtml(activity.title)}${where}</span>
-      <span class="activity-cost">${cost ? `~${cost}` : ""}</span>
+      <div class="activity-row">
+        <span class="activity-time">${escapeHtml(activity.time)}</span>
+        <span class="activity-title">${escapeHtml(activity.title)}${where}</span>
+        <span class="activity-cost">${cost ? `~${cost}` : ""}</span>
+      </div>
+      ${activity.description ? `<p class="activity-description">${escapeHtml(activity.description)}</p>` : ""}
     </div>`;
 }
 

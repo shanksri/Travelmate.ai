@@ -83,6 +83,21 @@ Rules:
 - Order each day's activities by time. Leave room to eat and to travel between
   places; do not overpack the pace the traveller asked for (relaxed: ~2
   anchored activities/day, balanced: ~3, packed: ~4-5).
+- Every activity's `description` must go deep on that specific place, not just
+  name it: 2-3 sentences on what it actually is and why it's worth the visit —
+  a concrete historical, cultural, or sensory detail (what you'll see, do, or
+  learn there), not filler. "Explore Shibuya Crossing" is not a description;
+  "One of the world's busiest pedestrian crossings, with up to 3,000 people
+  crossing at once when the lights change — best seen from the Starbucks
+  second-floor window above it or from the Shibuya Sky observation deck
+  nearby" is.
+- Only include food/drink activities (cafes, restaurants, food markets) when
+  the traveller's stated interests or notes actually call for it, or when a
+  meal slot is a natural, minimal placeholder (e.g. "lunch near X") — do not
+  pad the plan with restaurant or cafe recommendations nobody asked for.
+- Keep `notes` limited to logistics the traveller genuinely needs to know
+  (budget risk, visa/weather caveats, a transition day's timing) — not general
+  recommendations or commentary that belongs in an activity instead.
 - If costs so far already threaten the stated budget, note that honestly in
   `notes` instead of inventing cheaper numbers.
 
@@ -98,7 +113,7 @@ Respond with JSON matching exactly this shape:
         {
           "time": "09:00",
           "title": "short title",
-          "description": "what and why",
+          "description": "2-3 sentences: what it is, specifically, and why it's worth the visit",
           "location": "where",
           "category": "food|sightseeing|transit|lodging|activity|rest",
           "estimated_cost_usd": 25.0

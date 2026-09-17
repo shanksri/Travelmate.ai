@@ -102,6 +102,8 @@ def render(trip: PlannedTrip) -> str:
             )
             where = f" @ {act.location}" if act.location else ""
             lines.append(f"  {act.time}  {act.title}{where}{cost}")
+            if act.description:
+                lines.append(f"          {act.description}")
         lines.append("")
 
     if it.notes:
