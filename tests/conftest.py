@@ -108,6 +108,11 @@ def _block_real_network_calls(monkeypatch):
     clients call, not httpx.Client's instance methods — so FastAPI's
     TestClient (which drives requests through its own Client instance) is
     unaffected.
+
+    The `mcp` SDK (app/providers/tavily_mcp.py) ships its own vendored HTTP
+    client under a genuinely separate package name, `httpx2` — not an alias
+    for `httpx` — so it needs its own block here; patching `httpx.get`/`post`
+    above does not touch it.
     """
 
     def _blocked(*args, **kwargs):
@@ -115,6 +120,14 @@ def _block_real_network_calls(monkeypatch):
 
     monkeypatch.setattr("httpx.get", _blocked)
     monkeypatch.setattr("httpx.post", _blocked)
+
+    try:
+        import httpx2
+    except ImportError:
+        pass
+    else:
+        monkeypatch.setattr(httpx2, "get", _blocked)
+        monkeypatch.setattr(httpx2, "post", _blocked)
 
 
 class FakeHTTPResponse:
@@ -131,6 +144,23 @@ class FakeHTTPResponse:
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
             raise httpx.HTTPStatusError("error", request=None, response=self)
+
+
+class FakeMCPTextBlock:
+    """Stands in for an `mcp.types.TextContent` block."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class FakeMCPToolResult:
+    """Stands in for the `CallToolResult` an MCP `call_tool` returns —
+    used to mock `app.providers.tavily_mcp._call_tool` without a real
+    server round trip."""
+
+    def __init__(self, json_data: dict | None = None, *, is_error: bool = False) -> None:
+        self.is_error = is_error
+        self.content = [FakeMCPTextBlock(json.dumps(json_data))] if json_data is not None else []
 
 
 class FakeLLM:

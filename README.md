@@ -198,6 +198,39 @@ python -m app.providers.tavily
 `/trips/plan` actually calls. Wiring one of these in as a `live` data source
 is a separate next step.
 
+### MCP client (also standalone, not wired into the pipeline yet)
+
+`app/providers/tavily_mcp.py` (`fetch_search_mcp` + `search_via_mcp`) reaches
+the same Tavily search results a second way: over
+[MCP](https://modelcontextprotocol.io) instead of Tavily's REST API, using
+Tavily's hosted remote server at `https://mcp.tavily.com/mcp/`
+(streamable-HTTP transport, authenticated via `?tavilyApiKey=...` on the URL —
+no OAuth flow needed). It calls the server's `tavily_search` tool, whose JSON
+result matches the REST `/search` response shape exactly, so this module
+normalizes through the same `tavily.normalize_search` rather than duplicating
+models. The server also exposes `tavily_extract`, `tavily_crawl`,
+`tavily_map`, `tavily_research`, and `tavily_feedback` tools — only
+`tavily_search` is called so far.
+
+Built with the official `mcp` Python SDK (`ClientSession` +
+`streamable_http_client`). One real gotcha found while wiring this up: the SDK
+vendors its own HTTP client under a genuinely separate package name,
+`httpx2` — not an alias for `httpx` — so `tests/conftest.py`'s network-block
+fixture (which patches `httpx.get`/`post`) needed a second patch for
+`httpx2.get`/`post`, or a forgetful test here would silently make a real call.
+This module's own tests instead mock `_call_tool` directly, matching how
+`test_tavily.py` mocks `httpx.post`.
+
+Runnable standalone (needs `TAVILY_API_KEY`, same as the REST client above):
+
+```bash
+python -m app.providers.tavily_mcp
+```
+
+**Not implementing `TravelProvider`** — same status as the fetch clients
+above: built and verified against the live server, not yet a `live` data
+source for `/trips/plan`.
+
 ### Real OpenAI function-calling demo (also standalone)
 
 `app/main.py` has four functions (`call_flight_agent`, `call_hotel_agent`,
@@ -348,7 +381,17 @@ each one is easy to reintroduce by accident:
 - **Windows' legacy console codepage (cp1252) cannot encode `→`/`★`** — a real
   `UnicodeEncodeError` crash when printed, not just visual garbling.
   `scripts/plan_trip.py` forces `sys.stdout.reconfigure(encoding="utf-8")` and
-  avoids non-ASCII decorative characters in its output.
+  avoids non-ASCII decorative characters in its output. Hit again live via
+  `app.providers.tavily_mcp`'s demo — this time from an emoji inside real
+  search-result text, not a decorative character we chose — fixed the same
+  way.
+- **A vendored SDK dependency can bypass a network-blocking test fixture that
+  looks complete.** The `mcp` Python SDK ships its own HTTP client under a
+  genuinely separate package name, `httpx2` — not an alias for `httpx` — so
+  the existing fixture patching `httpx.get`/`post` silently did not cover
+  `app/providers/tavily_mcp.py`'s calls. Worth checking what HTTP library a
+  new dependency actually uses before assuming an existing network-block
+  fixture covers it.
 
 ## Status
 
