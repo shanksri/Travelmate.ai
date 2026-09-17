@@ -284,6 +284,42 @@ the same way instead of one of them crashing.
 **Not implementing `TravelProvider`** — same status as everything else here:
 built and tested, not yet a `live` data source for `/trips/plan`.
 
+### MCP server (our own, wrapping Open-Meteo weather)
+
+`app/mcp_server/weather.py` exposes one tool, `get_weather_forecast(place, days)`,
+wrapping `app/providers/weather.py`. Unlike every other integration in this
+project, **Open-Meteo needs no API key at all** — it's a free, keyless
+service — so there's no new `.env` entry for this one. Two chained real HTTP
+calls: geocode the place name to coordinates
+(`https://geocoding-api.open-meteo.com/v1/search`), then fetch its daily
+forecast (`https://api.open-meteo.com/v1/forecast`). The forecast horizon
+caps at 16 days out on the free tier; a longer `days` is clamped, not
+rejected.
+
+The raw forecast response is columnar (one array per field, aligned by index
+to a shared `daily.time` array) rather than a list of per-day records, and
+returns only numeric WMO weather codes with no description —
+`normalize_forecast` pivots it into one `DailyForecast` per date and maps
+each code to a human-readable condition (`WEATHER_CODES` in the same file).
+
+Runnable standalone, no key needed:
+
+```bash
+python -m app.providers.weather                     # one real geocode + fetch
+python -m app.mcp_server.weather                     # stdio
+python -m app.mcp_server.weather --transport streamable-http --port 8002
+```
+
+Same `ToolError`-vs-bare-exception distinction as the AviationStack server
+applies here too (see above) — `get_weather_forecast` raises `ToolError` for
+`WeatherError` (a place that doesn't geocode, or an API error) so in-process
+callers get a clean result instead of a crash.
+
+**Not implementing `TravelProvider`** — same status as everything else here:
+built and tested (this one against a genuinely free live API, so there's no
+plan-tier gate to hit), not yet wired in as the mocked `get_weather_outlook`'s
+real replacement.
+
 ### Real OpenAI function-calling demo (also standalone)
 
 `app/main.py` has four functions (`call_flight_agent`, `call_hotel_agent`,
