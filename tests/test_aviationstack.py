@@ -6,7 +6,44 @@ development."""
 import pytest
 from conftest import FakeHTTPResponse
 
-from app.providers.aviationstack import AviationStackError, fetch_flights, normalize_flights
+from app.providers.aviationstack import (
+    AviationStackError,
+    fetch_flights,
+    fetch_flights_future,
+    normalize_flights,
+    normalize_flights_future,
+)
+
+# One real record's shape from `/v1/flightsFuture`, captured from a live
+# fetch during development.
+FUTURE_SAMPLE_RESPONSE = {
+    "data": [
+        {
+            "weekday": "4",
+            "departure": {
+                "iataCode": "jfk",
+                "icaoCode": "kjfk",
+                "terminal": "8",
+                "gate": "35",
+                "scheduledTime": "2026-10-01 20:00:00",
+            },
+            "arrival": {
+                "iataCode": "lax",
+                "icaoCode": "klax",
+                "terminal": "4",
+                "gate": "",
+                "scheduledTime": "2026-10-01 23:13:00",
+            },
+            "aircraft": {"modelCode": "a321", "modelText": "airbus a321-231"},
+            "airline": {"name": "royal air maroc", "iataCode": "at", "icaoCode": "ram"},
+            "flight": {"number": "5027", "iataNumber": "at5027", "icaoNumber": "ram5027"},
+            "codeshared": {
+                "airline": {"name": "american airlines", "iataCode": "aa", "icaoCode": "aal"},
+                "flight": {"number": "117", "iataNumber": "aa117", "icaoNumber": "aal117"},
+            },
+        }
+    ],
+}
 
 # One real record's shape, trimmed to what actually varies between flights —
 # captured from a live fetch during development.
@@ -84,6 +121,21 @@ def test_fetch_flights_raises_on_an_api_error_payload(monkeypatch):
         fetch_flights(api_key="fake-key")
 
 
+def test_fetch_flights_passes_airline_filters_through(monkeypatch):
+    captured = {}
+
+    def fake_get(url, params, **kwargs):
+        captured.update(params)
+        return FakeHTTPResponse(SAMPLE_RESPONSE)
+
+    monkeypatch.setattr("httpx.get", fake_get)
+
+    fetch_flights(airline_name="American Airlines", airline_iata="AA", api_key="fake-key")
+
+    assert captured["airline_name"] == "American Airlines"
+    assert captured["airline_iata"] == "AA"
+
+
 def test_fetch_flights_raises_on_a_real_http_error_status(monkeypatch):
     """AviationStack doesn't always report a bad key via a 200-with-error-body
     — a well-formed but unrecognized key came back as a genuine 401 in a live
@@ -132,3 +184,66 @@ def test_normalize_flights_drops_fields_a_planner_does_not_need():
 
 def test_normalize_flights_on_no_results_returns_an_empty_list():
     assert normalize_flights({"data": []}) == []
+
+
+# --- fetch_flights_future ---------------------------------------------------
+
+
+def test_fetch_flights_future_requires_an_api_key(monkeypatch):
+    monkeypatch.delenv("AVIATION_API_KEY", raising=False)
+
+    with pytest.raises(AviationStackError, match="not set"):
+        fetch_flights_future(iata_code="JFK", schedule_type="departure", flight_date="2026-10-01")
+
+
+def test_fetch_flights_future_returns_the_parsed_payload(monkeypatch):
+    monkeypatch.setattr("httpx.get", lambda *a, **k: FakeHTTPResponse(FUTURE_SAMPLE_RESPONSE))
+
+    result = fetch_flights_future(
+        iata_code="JFK", schedule_type="departure", flight_date="2026-10-01", api_key="fake-key"
+    )
+
+    assert result == FUTURE_SAMPLE_RESPONSE
+
+
+def test_fetch_flights_future_raises_on_an_api_error_payload(monkeypatch):
+    error_payload = {"error": {"code": "function_access_restricted", "message": "Not on plan."}}
+    monkeypatch.setattr("httpx.get", lambda *a, **k: FakeHTTPResponse(error_payload))
+
+    with pytest.raises(AviationStackError, match="function_access_restricted"):
+        fetch_flights_future(
+            iata_code="JFK", schedule_type="departure", flight_date="2026-10-01", api_key="fake-key"
+        )
+
+
+# --- normalize_flights_future -----------------------------------------------
+
+
+def test_normalize_flights_future_flattens_the_nested_fields():
+    flights = normalize_flights_future(FUTURE_SAMPLE_RESPONSE)
+
+    assert len(flights) == 1
+    flight = flights[0]
+    assert flight.weekday == 4
+    assert flight.airline == "royal air maroc"
+    assert flight.flight_number == "at5027"  # was flight.iataNumber
+    assert flight.aircraft_type == "airbus a321-231"
+    assert flight.departure.iata == "jfk"
+    assert flight.departure.scheduled_time == "2026-10-01 20:00:00"
+
+
+def test_normalize_flights_future_keeps_codeshare_info():
+    flight = normalize_flights_future(FUTURE_SAMPLE_RESPONSE)[0]
+
+    assert flight.codeshare_airline == "american airlines"
+    assert flight.codeshare_flight_number == "aa117"
+
+
+def test_normalize_flights_future_turns_an_empty_gate_into_none():
+    flight = normalize_flights_future(FUTURE_SAMPLE_RESPONSE)[0]
+
+    assert flight.arrival.gate is None
+
+
+def test_normalize_flights_future_on_no_results_returns_an_empty_list():
+    assert normalize_flights_future({"data": []}) == []

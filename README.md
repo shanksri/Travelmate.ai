@@ -234,9 +234,22 @@ source for `/trips/plan`.
 ### MCP server (our own, wrapping AviationStack)
 
 The client above talks to someone else's MCP server; `app/mcp_server/aviationstack.py`
-is the other direction — our own MCP server, exposing a `search_flights` tool
-that wraps `app/providers/aviationstack.py`'s `fetch_flights` + `normalize_flights`.
-It adds no HTTP logic of its own; the MCP surface is the only new thing here.
+is the other direction — our own MCP server, exposing two tools that wrap
+`app/providers/aviationstack.py`: `search_flights` (real-time flights, now
+also filterable by `airline_name`/`airline_iata`) and `future_flight_schedule`
+(scheduled routes for one airport by weekday, from `/v1/flightsFuture`). It
+adds no HTTP logic of its own; the MCP surface is the only new thing here.
+
+**Only these two are implemented, deliberately.** A reference project's tool
+list (screenshot shared 2026-09-18) also had `list_airports`, `list_airlines`,
+`list_routes`, `list_taxes`, historical flights-by-date, and several "random
+X detailed info" tools (airplanes, aircraft types, cities, countries).
+Probing AviationStack's real endpoints live with this project's key returned
+`403 function_access_restricted` for every one of those — they're gated
+behind a paid plan. `search_flights` and `future_flight_schedule` are the
+only two endpoints (`/v1/flights`, `/v1/flightsFuture`) this key can actually
+call, so those are the only two built; the rest are candidates for later if
+the plan is ever upgraded, not before.
 
 Built with the official `mcp` SDK's `MCPServer` (in `mcp==2.2.0`, this is
 what `FastMCP` was renamed to — see the SDK's own migration-guide error
@@ -257,9 +270,9 @@ other exception *raises* as `UnexpectedToolError` instead of returning
 one. Over a **real transport** (stdio or streamable HTTP), the SDK's
 JSON-RPC dispatch layer catches either kind and reports it to the client as
 `CallToolResult(is_error=True)` — confirmed against both this server and
-Tavily's remote one. `search_flights` deliberately raises `ToolError` (not a
-bare exception) for `AviationStackError` so in-process callers get a clean
-result too, not a crash.
+Tavily's remote one. Both tools deliberately raise `ToolError` (not a bare
+exception) for `AviationStackError` — including the `function_access_restricted`
+case above — so in-process callers get a clean result too, not a crash.
 
 A second gotcha, found the same way: AviationStack doesn't always report a
 bad key as its usual 200-with-an-`error`-body shape — a live test with a

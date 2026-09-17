@@ -12,7 +12,7 @@ from datetime import date, datetime
 
 import httpx
 from dotenv import load_dotenv
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # Idempotent, and doesn't override a var already set in the real environment
 # — consistent with how the rest of this project treats .env as a fallback,
@@ -30,6 +30,8 @@ def fetch_flights(
     *,
     dep_iata: str | None = None,
     arr_iata: str | None = None,
+    airline_name: str | None = None,
+    airline_iata: str | None = None,
     flight_status: str | None = None,
     limit: int = 5,
     api_key: str | None = None,
@@ -50,6 +52,10 @@ def fetch_flights(
         params["dep_iata"] = dep_iata
     if arr_iata:
         params["arr_iata"] = arr_iata
+    if airline_name:
+        params["airline_name"] = airline_name
+    if airline_iata:
+        params["airline_iata"] = airline_iata
     if flight_status:
         params["flight_status"] = flight_status
 
@@ -62,6 +68,50 @@ def fetch_flights(
         # 200-with-an-error-body shape below — seen live via a bad key, which
         # came back as a genuine 401. Without this, that case crashed instead
         # of raising AviationStackError like every other failure here does.
+        raise AviationStackError(
+            f"AviationStack returned {response.status_code}: {response.text}"
+        ) from exc
+    payload = response.json()
+
+    if "error" in payload:
+        error = payload["error"]
+        message = error.get("message") or error.get("info")
+        raise AviationStackError(f"{error.get('code')}: {message}")
+
+    return payload
+
+
+def fetch_flights_future(
+    *,
+    iata_code: str,
+    schedule_type: str,
+    flight_date: str,
+    api_key: str | None = None,
+    timeout: float = 10.0,
+) -> dict:
+    """Fetch a future flight schedule for one airport (`/v1/flightsFuture`).
+
+    Unlike `fetch_flights`, all three filters are required by the API itself:
+    `iata_code` (the airport), `schedule_type` ("departure" or "arrival"), and
+    `flight_date` ("YYYY-MM-DD"). This is a genuinely different endpoint —
+    scheduled routes and timings, not live status — so it gets its own fetch
+    function and models rather than reusing `Flight`.
+    """
+    key = api_key or os.environ.get("AVIATION_API_KEY")
+    if not key:
+        raise AviationStackError("AVIATION_API_KEY is not set")
+
+    params = {
+        "access_key": key,
+        "iataCode": iata_code,
+        "type": schedule_type,
+        "date": flight_date,
+    }
+
+    response = httpx.get(f"{BASE_URL}/flightsFuture", params=params, timeout=timeout)
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
         raise AviationStackError(
             f"AviationStack returned {response.status_code}: {response.text}"
         ) from exc
@@ -136,6 +186,64 @@ def normalize_flights(raw: dict) -> list[Flight]:
                 flight_number=flight.get("iata") or flight.get("icao"),
                 departure=_normalize_endpoint(item.get("departure") or {}),
                 arrival=_normalize_endpoint(item.get("arrival") or {}),
+            )
+        )
+    return flights
+
+
+# `/v1/flightsFuture` is a genuinely different shape from `/v1/flights` —
+# scheduled routes by weekday, camelCase field names, no live status — so it
+# gets its own model instead of being forced into `Flight`/`FlightEndpoint`.
+
+
+class FutureFlightEndpoint(BaseModel):
+    iata: str | None
+    terminal: str | None = None
+    gate: str | None = None
+    scheduled_time: str | None = None
+
+
+class FutureFlight(BaseModel):
+    weekday: int | None = Field(default=None, description="ISO weekday, 1=Monday..7=Sunday.")
+    airline: str | None
+    flight_number: str | None
+    aircraft_type: str | None = None
+    departure: FutureFlightEndpoint
+    arrival: FutureFlightEndpoint
+    codeshare_airline: str | None = None
+    codeshare_flight_number: str | None = None
+
+
+def _normalize_future_endpoint(raw: dict) -> FutureFlightEndpoint:
+    return FutureFlightEndpoint(
+        iata=raw.get("iataCode"),
+        terminal=raw.get("terminal") or None,
+        gate=raw.get("gate") or None,
+        scheduled_time=raw.get("scheduledTime"),
+    )
+
+
+def normalize_flights_future(raw: dict) -> list[FutureFlight]:
+    """Turn a raw `fetch_flights_future` response into a list of `FutureFlight`."""
+    flights = []
+    for item in raw.get("data", []):
+        airline = item.get("airline") or {}
+        flight = item.get("flight") or {}
+        aircraft = item.get("aircraft") or {}
+        codeshared = item.get("codeshared") or {}
+        codeshare_airline = codeshared.get("airline") or {}
+        codeshare_flight = codeshared.get("flight") or {}
+        weekday = item.get("weekday")
+        flights.append(
+            FutureFlight(
+                weekday=int(weekday) if weekday is not None else None,
+                airline=airline.get("name"),
+                flight_number=flight.get("iataNumber") or flight.get("icaoNumber"),
+                aircraft_type=aircraft.get("modelText"),
+                departure=_normalize_future_endpoint(item.get("departure") or {}),
+                arrival=_normalize_future_endpoint(item.get("arrival") or {}),
+                codeshare_airline=codeshare_airline.get("name"),
+                codeshare_flight_number=codeshare_flight.get("iataNumber"),
             )
         )
     return flights
