@@ -54,7 +54,17 @@ def fetch_flights(
         params["flight_status"] = flight_status
 
     response = httpx.get(f"{BASE_URL}/flights", params=params, timeout=timeout)
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        # AviationStack reports some failures (e.g. a well-formed but
+        # unrecognized key) as a real HTTP error status rather than its usual
+        # 200-with-an-error-body shape below — seen live via a bad key, which
+        # came back as a genuine 401. Without this, that case crashed instead
+        # of raising AviationStackError like every other failure here does.
+        raise AviationStackError(
+            f"AviationStack returned {response.status_code}: {response.text}"
+        ) from exc
     payload = response.json()
 
     if "error" in payload:

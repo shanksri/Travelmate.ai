@@ -84,6 +84,19 @@ def test_fetch_flights_raises_on_an_api_error_payload(monkeypatch):
         fetch_flights(api_key="fake-key")
 
 
+def test_fetch_flights_raises_on_a_real_http_error_status(monkeypatch):
+    """AviationStack doesn't always report a bad key via a 200-with-error-body
+    — a well-formed but unrecognized key came back as a genuine 401 in a live
+    test. That should raise AviationStackError like every other failure here,
+    not crash with an unhandled httpx.HTTPStatusError."""
+    monkeypatch.setattr(
+        "httpx.get", lambda *a, **k: FakeHTTPResponse({"message": "Unauthorized"}, status_code=401)
+    )
+
+    with pytest.raises(AviationStackError, match="401"):
+        fetch_flights(api_key="fake-key")
+
+
 # --- normalize_flights ------------------------------------------------------
 
 

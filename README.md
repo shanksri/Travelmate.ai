@@ -231,6 +231,46 @@ python -m app.providers.tavily_mcp
 above: built and verified against the live server, not yet a `live` data
 source for `/trips/plan`.
 
+### MCP server (our own, wrapping AviationStack)
+
+The client above talks to someone else's MCP server; `app/mcp_server/aviationstack.py`
+is the other direction — our own MCP server, exposing a `search_flights` tool
+that wraps `app/providers/aviationstack.py`'s `fetch_flights` + `normalize_flights`.
+It adds no HTTP logic of its own; the MCP surface is the only new thing here.
+
+Built with the official `mcp` SDK's `MCPServer` (in `mcp==2.2.0`, this is
+what `FastMCP` was renamed to — see the SDK's own migration-guide error
+message if you hit the old name). Runnable standalone, needs `AVIATION_API_KEY`:
+
+```bash
+python -m app.mcp_server.aviationstack                     # stdio — what Claude
+                                                             # Desktop/Code launch a
+                                                             # local server with
+python -m app.mcp_server.aviationstack --transport streamable-http --port 8001
+```
+
+One real gotcha found while wiring this up, confirmed by running the tool
+both ways: `MCPServer.call_tool(...)` called **in-process** (no transport —
+this project's own tests, or another module composing this server) only
+turns a deliberately-raised `ToolError`/`ResourceError` into a result; any
+other exception *raises* as `UnexpectedToolError` instead of returning
+one. Over a **real transport** (stdio or streamable HTTP), the SDK's
+JSON-RPC dispatch layer catches either kind and reports it to the client as
+`CallToolResult(is_error=True)` — confirmed against both this server and
+Tavily's remote one. `search_flights` deliberately raises `ToolError` (not a
+bare exception) for `AviationStackError` so in-process callers get a clean
+result too, not a crash.
+
+A second gotcha, found the same way: AviationStack doesn't always report a
+bad key as its usual 200-with-an-`error`-body shape — a live test with a
+bogus key came back as a genuine HTTP 401. `fetch_flights` only handled the
+200 shape before this; it now also catches `httpx.HTTPStatusError` and
+raises `AviationStackError` for that case too, so both failure shapes behave
+the same way instead of one of them crashing.
+
+**Not implementing `TravelProvider`** — same status as everything else here:
+built and tested, not yet a `live` data source for `/trips/plan`.
+
 ### Real OpenAI function-calling demo (also standalone)
 
 `app/main.py` has four functions (`call_flight_agent`, `call_hotel_agent`,
