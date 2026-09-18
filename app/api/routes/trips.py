@@ -6,10 +6,13 @@ from fastapi import APIRouter, HTTPException, status
 
 from app.agent.planner import PlanningError, plan_trip, plan_trip_from_prompt
 from app.agent.prompt_parser import PromptParseError
+from app.agent.reviser import RevisionError, revise_trip
 from app.api.schemas import (
     PlanFromPromptRequest,
     PlanTripRequest,
     PlanTripResponse,
+    ReviseTripRequest,
+    TripHistoryResponse,
     TripListResponse,
 )
 from app.models.itinerary import PlannedTrip
@@ -49,6 +52,11 @@ def _run(planning_call: Callable[[], PlannedTrip]) -> PlanTripResponse:
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY, f"The planner did not finish: {exc}"
         ) from exc
+    except RevisionError as exc:
+        logger.error("revision failed: %s", exc)
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, f"The change could not be applied: {exc}"
+        ) from exc
 
     get_store().save(trip)
     return PlanTripResponse(trip=trip)
@@ -75,6 +83,31 @@ def create_plan_from_prompt(payload: PlanFromPromptRequest) -> PlanTripResponse:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, f"Couldn't understand that trip request: {exc}"
         ) from exc
+
+
+@router.post("/{thread_id}/revise", response_model=PlanTripResponse)
+def revise_plan(thread_id: str, payload: ReviseTripRequest) -> PlanTripResponse:
+    """Apply one change to an already-planned trip.
+
+    Builds on the newest version of `thread_id` and saves the result as the
+    next version — the earlier ones stay exactly as they were, so the whole
+    history is still there afterwards.
+    """
+    previous = get_store().get_latest(thread_id)
+    if previous is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"No trip {thread_id}")
+
+    return _run(lambda: revise_trip(previous, payload.change_request))
+
+
+@router.get("/{thread_id}/history", response_model=TripHistoryResponse)
+def get_history(thread_id: str) -> TripHistoryResponse:
+    """Every version of one trip, oldest first — version 1 is the original."""
+    versions = get_store().list_versions(thread_id)
+    if not versions:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"No trip {thread_id}")
+
+    return TripHistoryResponse(thread_id=thread_id, versions=versions)
 
 
 @router.get("", response_model=TripListResponse)

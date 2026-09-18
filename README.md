@@ -121,8 +121,10 @@ uvicorn app.main:app --reload
 | `GET` | `/health` | Liveness, plus the configured model, provider and store |
 | `POST` | `/trips/plan` | Plan a trip from structured parameters; returns the stored `PlannedTrip` |
 | `POST` | `/trips/plan-from-prompt` | Plan a trip from one free-text sentence — what the frontend calls |
+| `POST` | `/trips/{thread_id}/revise` | Apply one change to an existing trip; saves and returns the next version |
+| `GET` | `/trips/{thread_id}/history` | Every version of one trip, oldest first |
 | `GET` | `/trips` | Every trip planned since the process started |
-| `GET` | `/trips/{id}` | One trip |
+| `GET` | `/trips/{id}` | One trip version |
 
 ```bash
 curl -X POST localhost:8000/trips/plan -H 'content-type: application/json' -d '{
@@ -143,6 +145,41 @@ leaves out dates gets a default 5-day trip starting two weeks out — see
 
 Interactive docs are at `/docs`.
 
+### Revisions and trip history
+
+A planned trip isn't final. Ask for a change against its `thread_id` and the
+result is saved as the **next version**, leaving every earlier one exactly as
+it was:
+
+```bash
+curl -X POST localhost:8000/trips/{thread_id}/revise -H 'content-type: application/json' -d '{
+  "change_request": "I want to do more activities on day 3"
+}'
+
+curl localhost:8000/trips/{thread_id}/history
+```
+
+Every `PlannedTrip` carries `thread_id` (stable across the whole edit
+history), `version` (1, 2, 3...) and `change_note` (what was asked for —
+`null` on the original). `id` still identifies that one version, so
+`GET /trips/{id}` keeps working and old versions stay retrievable forever.
+
+A revision runs **only** the itinerary step (`app/agent/reviser.py`), not the
+five-node planning graph: destination, dates, flights and lodging carry over
+untouched from the version being revised, and are deliberately withheld from
+the model's prompt so a request to reshuffle day 3 can't quietly swap the
+hotel or re-price a flight. `REVISE_ITINERARY_SYSTEM` requires the complete
+plan back — every day, with untouched days returned unchanged — and the
+result goes through the same `parse_itinerary` validation (exact dates, in
+order) and the same retry-with-feedback loop as the original. Only the
+activity portion of the total cost is recomputed.
+
+Verified end-to-end on a real 4-day Kyoto trip: "more activities on day 3"
+took day 3 from 2 to 3 activities, left days 1, 2 and 4 byte-for-byte
+identical, and moved the total from $2,953.69 to $3,003.69. A follow-up
+"make day 1 more relaxed" built on *that* version, swapping day 1's walking
+loop for a tea house while leaving the newly added day-3 activity in place.
+
 ### Layout
 
 | Path | What lives there |
@@ -155,10 +192,11 @@ Interactive docs are at `/docs`.
 | `app/agent/itinerary_json.py` | Parses and Pydantic-validates the itinerary agent's JSON |
 | `app/agent/prompt_parser.py` | Turns one free-text sentence into a `TripRequest` — what powers the frontend's single prompt box |
 | `app/agent/planner.py` | `plan_trip()` / `plan_trip_from_prompt()` — build the graph, invoke it, map the result to a `PlannedTrip` |
+| `app/agent/reviser.py` | `revise_trip()` — applies one requested change to an existing trip, re-running only the itinerary step |
 | `app/providers/` | The travel data seam (`TravelProvider` Protocol) |
 | `app/models/itinerary.py` | `TripRequest`, `Itinerary`, `PlannedTrip` |
 | `app/api/` | FastAPI routes and wire schemas |
-| `app/store.py` | `TripStore` Protocol, `InMemoryTripStore`, and `SqlTripStore` (Postgres via Docker, or any SQLAlchemy engine) |
+| `app/store.py` | `TripStore` Protocol, `InMemoryTripStore`, and `SqlTripStore` (Postgres via Docker, or any SQLAlchemy engine) — append-only version history per `thread_id` |
 | `frontend/` | The plain HTML/CSS/JS frontend (dark theme, single prompt box) — served by `app/main.py`, no build step |
 | `scripts/run_server.py` | Launches the API from an absolute path — a workaround if something ever runs `uvicorn` from the wrong working directory and silently imports a same-named `app` package from elsewhere |
 
@@ -481,6 +519,17 @@ each one is easy to reintroduce by accident:
   `app/providers/tavily_mcp.py`'s calls. Worth checking what HTTP library a
   new dependency actually uses before assuming an existing network-block
   fixture covers it.
+- **SQLAlchemy's `create_all()` creates missing *tables*, never missing
+  *columns*.** Adding `thread_id`/`version` to the `trips` table meant a
+  database created before versioning existed would keep its old three columns
+  and fail on every insert — `create_all()` sees the table exists and does
+  nothing. `SqlTripStore._add_versioning_columns_if_missing()` inspects the
+  live table and `ALTER`s in what's missing (plus the `thread_id` index, which
+  `create_all` also skips on an existing table), backfilling each old row as
+  version 1 of its own thread. Verified against the real Postgres with 7
+  pre-existing trips, then re-run from scratch to confirm it's idempotent.
+  Worth remembering for any future column on that table — this project has no
+  Alembic.
 - **A field the LLM already fills in can go completely unseen.**
   `Activity.description` ("what and why") was being generated by the
   itinerary agent on every request, but neither the frontend

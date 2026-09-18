@@ -50,8 +50,14 @@ def plan_trip(
         reason = "; ".join(result["errors"]) or "no reason recorded"
         raise PlanningError(f"the agent pipeline did not produce an itinerary: {reason}")
 
+    # A fresh plan starts its own thread at version 1. `id` identifies this
+    # version; `thread_id` is what a later revision is addressed to, and is
+    # the same value here only because nothing has been revised yet.
+    trip_id = uuid.uuid4().hex[:12]
     return PlannedTrip(
-        id=uuid.uuid4().hex[:12],
+        id=trip_id,
+        thread_id=trip_id,
+        version=1,
         request=request,
         itinerary=result["itinerary"],
         agent_trace=result["messages"],

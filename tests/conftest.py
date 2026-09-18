@@ -76,18 +76,30 @@ def draft_itinerary_json(request: TripRequest, **overrides) -> str:
     return json.dumps(draft_itinerary_payload(request) | overrides)
 
 
-def sample_planned_trip(request: TripRequest, trip_id: str = "abc123") -> PlannedTrip:
+def sample_planned_trip(
+    request: TripRequest,
+    trip_id: str = "abc123",
+    *,
+    thread_id: str | None = None,
+    version: int = 1,
+    change_note: str | None = None,
+    days: list | None = None,
+) -> PlannedTrip:
     """A minimal but valid `PlannedTrip`, for tests that need one stored
-    without running the whole agent graph."""
+    without running the whole agent graph. `thread_id` defaults to `trip_id`,
+    which is what a freshly planned (never revised) trip looks like."""
     return PlannedTrip(
         id=trip_id,
+        thread_id=thread_id or trip_id,
+        version=version,
+        change_note=change_note,
         request=request,
         itinerary=Itinerary(
             destination=request.destination or "Lisbon, Portugal",
             start_date=request.start_date,
             end_date=request.end_date,
             travelers=request.travelers,
-            days=[],
+            days=days or [],
         ),
         summary="A short stay.",
     )

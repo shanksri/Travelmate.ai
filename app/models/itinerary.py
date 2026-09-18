@@ -122,10 +122,33 @@ class Itinerary(BaseModel):
 
 
 class PlannedTrip(BaseModel):
-    """An itinerary plus how the agent pipeline arrived at it."""
+    """One version of an itinerary, plus how the agent pipeline arrived at it.
+
+    `id` identifies this version; `thread_id` groups every version of the same
+    trip together and is what survives a revision. Planning a new trip starts
+    a new thread at version 1; each accepted change appends version 2, 3, ...
+    under the same thread, so the store keeps the whole history rather than
+    overwriting (see app/store.py).
+    """
 
     id: str
+    thread_id: str
+    version: int = Field(default=1, ge=1)
+    change_note: str | None = Field(
+        default=None,
+        description="What was asked for to produce this version. None on the original.",
+    )
     request: TripRequest
     itinerary: Itinerary
     agent_trace: list[str] = Field(default_factory=list)
     summary: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_rows_are_version_one_of_their_own_thread(cls, data: object) -> object:
+        """Trips stored before versioning existed have no `thread_id`. Treating
+        each one as version 1 of a thread named after its own id is exactly
+        right — they have no history — and means old rows still load."""
+        if isinstance(data, dict) and "thread_id" not in data and "id" in data:
+            return {**data, "thread_id": data["id"]}
+        return data

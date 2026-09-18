@@ -116,3 +116,106 @@ def test_plan_from_prompt_rejects_an_unparseable_request(client, monkeypatch):
 def test_plan_from_prompt_rejects_an_empty_prompt(client):
     response = client.post("/trips/plan-from-prompt", json={"prompt": ""})
     assert response.status_code == 422
+
+
+# --- revisions and history ---------------------------------------------------
+
+
+def test_revise_saves_a_new_version_and_keeps_the_old_one(client, trip_request, monkeypatch):
+    original = sample_planned_trip(trip_request, trip_id="rev-v1", thread_id="rev")
+    get_store().save(original)
+
+    def fake_revise(previous, change_request):
+        return sample_planned_trip(
+            trip_request,
+            trip_id="rev-v2",
+            thread_id=previous.thread_id,
+            version=previous.version + 1,
+            change_note=change_request,
+        )
+
+    monkeypatch.setattr("app.api.routes.trips.revise_trip", fake_revise)
+
+    response = client.post("/trips/rev/revise", json={"change_request": "more on day 3"})
+
+    assert response.status_code == 200
+    body = response.json()["trip"]
+    assert body["version"] == 2
+    assert body["thread_id"] == "rev"
+    assert body["change_note"] == "more on day 3"
+    assert client.get("/trips/rev-v1").status_code == 200  # original still there
+
+
+def test_revise_builds_on_the_latest_version(client, trip_request, monkeypatch):
+    for n in (1, 2):
+        get_store().save(
+            sample_planned_trip(
+                trip_request, trip_id=f"l-v{n}", thread_id="latest", version=n
+            )
+        )
+    seen = {}
+
+    def fake_revise(previous, change_request):
+        seen["version"] = previous.version
+        return sample_planned_trip(
+            trip_request, trip_id="l-v3", thread_id="latest", version=previous.version + 1
+        )
+
+    monkeypatch.setattr("app.api.routes.trips.revise_trip", fake_revise)
+
+    client.post("/trips/latest/revise", json={"change_request": "again"})
+
+    assert seen["version"] == 2
+
+
+def test_revise_on_an_unknown_thread_is_a_404(client):
+    response = client.post("/trips/nope/revise", json={"change_request": "more on day 3"})
+    assert response.status_code == 404
+
+
+def test_revise_rejects_an_empty_change_request(client, trip_request):
+    get_store().save(sample_planned_trip(trip_request, trip_id="e-v1", thread_id="empty"))
+
+    response = client.post("/trips/empty/revise", json={"change_request": ""})
+
+    assert response.status_code == 422
+
+
+def test_revision_failure_surfaces_as_502(client, trip_request, monkeypatch):
+    from app.agent.reviser import RevisionError
+
+    get_store().save(sample_planned_trip(trip_request, trip_id="f-v1", thread_id="fails"))
+
+    def boom(previous, change_request):
+        raise RevisionError("gave up after 3 attempt(s)")
+
+    monkeypatch.setattr("app.api.routes.trips.revise_trip", boom)
+
+    response = client.post("/trips/fails/revise", json={"change_request": "more on day 3"})
+
+    assert response.status_code == 502
+    assert "could not be applied" in response.json()["detail"]
+
+
+def test_history_returns_every_version_oldest_first(client, trip_request):
+    for n in (1, 2, 3):
+        get_store().save(
+            sample_planned_trip(
+                trip_request,
+                trip_id=f"h-v{n}",
+                thread_id="hist",
+                version=n,
+                change_note=None if n == 1 else f"change {n}",
+            )
+        )
+
+    body = client.get("/trips/hist/history").json()
+
+    assert body["thread_id"] == "hist"
+    assert [v["version"] for v in body["versions"]] == [1, 2, 3]
+    assert body["versions"][0]["change_note"] is None
+    assert body["versions"][2]["change_note"] == "change 3"
+
+
+def test_history_on_an_unknown_thread_is_a_404(client):
+    assert client.get("/trips/nope/history").status_code == 404

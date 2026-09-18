@@ -19,12 +19,25 @@ class PlanFromPromptRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=2000)
 
 
+class ReviseTripRequest(BaseModel):
+    """One change to an already-planned trip, e.g. "more activities on day 3"."""
+
+    change_request: str = Field(min_length=1, max_length=2000)
+
+
 class PlanTripResponse(BaseModel):
     trip: PlannedTrip
 
 
 class TripListResponse(BaseModel):
     trips: list[PlannedTrip]
+
+
+class TripHistoryResponse(BaseModel):
+    """Every version of one trip, oldest first."""
+
+    thread_id: str
+    versions: list[PlannedTrip]
 
 
 class HealthResponse(BaseModel):
