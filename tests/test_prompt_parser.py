@@ -17,7 +17,7 @@ def _payload(**overrides) -> str:
         "end_date": None,
         "duration_days": None,
         "travelers": 1,
-        "budget_usd": None,
+        "budget": None,
         "interests": [],
         "pace": "balanced",
         "notes": None,
@@ -34,7 +34,7 @@ def test_parses_explicit_fields():
                 start_date="2026-12-01",
                 end_date="2026-12-05",
                 travelers=2,
-                budget_usd=2400,
+                budget=200_000,
                 interests=["sightseeing"],
                 pace="packed",
             )
@@ -48,7 +48,7 @@ def test_parses_explicit_fields():
     assert request.start_date == date(2026, 12, 1)
     assert request.end_date == date(2026, 12, 5)
     assert request.travelers == 2
-    assert request.budget_usd == 2400
+    assert request.budget == 200_000
     assert request.pace == "packed"
 
 

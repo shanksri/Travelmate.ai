@@ -29,17 +29,17 @@ def planned(trip_request):
         origin="BOS",
         destination="LIS",
         depart_date=trip_request.start_date,
-        total_usd=500.0,
+        total=45_000.0,
     )
     trip.itinerary.return_flight = FlightLeg(
         carrier="Meridian Air",
         origin="LIS",
         destination="BOS",
         depart_date=trip_request.end_date,
-        total_usd=400.0,
+        total=38_000.0,
     )
     trip.itinerary.lodging_options = [
-        LodgingOption(name="Casa Vista Hostel", nightly_usd=100.0, total_usd=300.0)
+        LodgingOption(name="Casa Vista Hostel", nightly=8_000.0, total=24_000.0)
     ]
     return trip
 
@@ -107,7 +107,7 @@ def test_the_model_is_never_shown_the_flights_or_hotel(planned, trip_request, se
 def test_cost_is_recomputed_from_the_revised_activities(planned, trip_request, settings):
     payload = draft_itinerary_payload(trip_request)
     for day in payload["days"]:
-        day["activities"][0]["estimated_cost_usd"] = 50
+        day["activities"][0]["estimated_cost"] = 5_000
     llm = FakeLLM(
         by_system={
             REVISE_ITINERARY_SYSTEM: [json.dumps(payload)],
@@ -117,8 +117,8 @@ def test_cost_is_recomputed_from_the_revised_activities(planned, trip_request, s
 
     revised = revise_trip(planned, "pricier activities", llm=llm, settings=settings)
 
-    # 500 + 400 flights, 300 hotel, then 50 per day of activities.
-    expected = 500 + 400 + 300 + 50 * len(revised.itinerary.days)
+    # 45,000 + 38,000 flights, 24,000 hotel, then 5,000 per day of activities.
+    expected = 45_000 + 38_000 + 24_000 + 5_000 * len(revised.itinerary.days)
     assert revised.itinerary.total_estimated_cost == expected
 
 

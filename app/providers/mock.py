@@ -2,7 +2,8 @@
 
 Seeded from the query itself, so the same question always yields the same
 numbers — which keeps agent behaviour reproducible in tests and demos. The
-prices are plausible fiction, not quotes.
+prices are plausible fiction, not quotes, and they are **rupees** — not
+dollars converted at some rate, just figures chosen to be realistic in INR.
 """
 
 import hashlib
@@ -10,32 +11,32 @@ from datetime import date
 from typing import Any
 
 
-def _destination(name: str, tags: list[str], base_daily_usd: int) -> dict[str, Any]:
-    return {"name": name, "tags": tags, "base_daily_usd": base_daily_usd}
+def _destination(name: str, tags: list[str], base_daily: int) -> dict[str, Any]:
+    return {"name": name, "tags": tags, "base_daily": base_daily}
 
 
 _DESTINATIONS: list[dict[str, Any]] = [
-    _destination("Lisbon, Portugal", ["food", "history", "coast", "budget"], 110),
-    _destination("Kyoto, Japan", ["culture", "history", "food", "temples"], 165),
-    _destination("Reykjavik, Iceland", ["nature", "hiking", "adventure"], 230),
-    _destination("Mexico City, Mexico", ["food", "art", "nightlife", "budget"], 95),
-    _destination("Queenstown, New Zealand", ["adventure", "hiking", "nature"], 190),
-    _destination("Rome, Italy", ["history", "food", "art"], 150),
-    _destination("Chiang Mai, Thailand", ["food", "temples", "budget", "nature"], 70),
-    _destination("Barcelona, Spain", ["beach", "art", "food", "nightlife"], 140),
+    _destination("Lisbon, Portugal", ["food", "history", "coast", "budget"], 9_000),
+    _destination("Kyoto, Japan", ["culture", "history", "food", "temples"], 14_000),
+    _destination("Reykjavik, Iceland", ["nature", "hiking", "adventure"], 19_500),
+    _destination("Mexico City, Mexico", ["food", "art", "nightlife", "budget"], 8_000),
+    _destination("Queenstown, New Zealand", ["adventure", "hiking", "nature"], 16_000),
+    _destination("Rome, Italy", ["history", "food", "art"], 12_500),
+    _destination("Chiang Mai, Thailand", ["food", "temples", "budget", "nature"], 6_000),
+    _destination("Barcelona, Spain", ["beach", "art", "food", "nightlife"], 11_500),
 ]
 
 _ATTRACTION_KINDS = [
     ("old town walking loop", "sightseeing", 0, 120),
-    ("central food market", "food", 25, 90),
-    ("national museum", "sightseeing", 18, 150),
+    ("central food market", "food", 2_000, 90),
+    ("national museum", "sightseeing", 1_500, 150),
     ("hilltop viewpoint at sunset", "sightseeing", 0, 90),
-    ("half-day cooking class", "activity", 75, 240),
-    ("coastal or river day trip", "activity", 60, 420),
-    ("neighbourhood cafe crawl", "food", 30, 120),
-    ("botanical gardens", "sightseeing", 12, 100),
-    ("live music venue", "activity", 25, 150),
-    ("guided history tour", "activity", 40, 180),
+    ("half-day cooking class", "activity", 6_000, 240),
+    ("coastal or river day trip", "activity", 5_000, 420),
+    ("neighbourhood cafe crawl", "food", 2_500, 120),
+    ("botanical gardens", "sightseeing", 1_000, 100),
+    ("live music venue", "activity", 2_000, 150),
+    ("guided history tour", "activity", 3_500, 180),
 ]
 
 _CONDITIONS = [
@@ -46,7 +47,7 @@ _CONDITIONS = [
     "hot and sunny",
 ]
 
-_BUDGET_CAPS = {"low": 120, "medium": 180, "high": 10_000}
+_BUDGET_CAPS = {"low": 10_000, "medium": 15_000, "high": 1_000_000}
 
 
 def _seed(*parts: object) -> int:
@@ -64,11 +65,11 @@ class MockTravelProvider:
         self, interests: list[str], month: int, budget_level: str
     ) -> list[dict[str, Any]]:
         wanted = {i.strip().lower() for i in interests}
-        cap = _BUDGET_CAPS.get(budget_level, 10_000)
+        cap = _BUDGET_CAPS.get(budget_level, 1_000_000)
 
         scored = []
         for dest in _DESTINATIONS:
-            if dest["base_daily_usd"] > cap:
+            if dest["base_daily"] > cap:
                 continue
             tags = set(dest["tags"])
             matched = sorted(wanted & tags)
@@ -79,11 +80,11 @@ class MockTravelProvider:
                     "name": dest["name"],
                     "match_score": len(matched) * 2 + seasonal,
                     "matched_interests": matched,
-                    "estimated_daily_cost_usd": dest["base_daily_usd"],
+                    "estimated_daily_cost": dest["base_daily"],
                     "known_for": dest["tags"][:3],
                 }
             )
-        scored.sort(key=lambda d: (-d["match_score"], d["estimated_daily_cost_usd"]))
+        scored.sort(key=lambda d: (-d["match_score"], d["estimated_daily_cost"]))
         return scored[:5]
 
     def search_flights(
@@ -94,7 +95,7 @@ class MockTravelProvider:
         for i, (carrier, stops) in enumerate(
             [("Meridian Air", 0), ("Northwind", 1), ("Cadence Airways", 1)]
         ):
-            price = max(_jitter(base + i, 180, 950) - stops * 40, 90.0)
+            price = max(_jitter(base + i, 15_000, 80_000) - stops * 3_500, 7_500.0)
             options.append(
                 {
                     "carrier": carrier,
@@ -103,11 +104,11 @@ class MockTravelProvider:
                     "depart_date": depart.isoformat(),
                     "stops": stops,
                     "duration_hours": round(4 + stops * 3.5 + (base + i) % 7, 1),
-                    "price_usd_per_person": round(price, 2),
-                    "total_usd": round(price * travelers, 2),
+                    "price_per_person": round(price, 2),
+                    "total": round(price * travelers, 2),
                 }
             )
-        return sorted(options, key=lambda o: o["total_usd"])
+        return sorted(options, key=lambda o: o["total"])
 
     def search_lodging(
         self, destination: str, check_in: date, nights: int, travelers: int
@@ -123,19 +124,19 @@ class MockTravelProvider:
                 ("The Ardent House", "boutique", 9.3),
             ]
         ):
-            nightly = _jitter(base + i * 17, 35, 340) + i * 45
+            nightly = _jitter(base + i * 17, 3_000, 28_000) + i * 3_800
             options.append(
                 {
                     "name": name,
                     "tier": tier,
                     "rating": rating,
                     "neighbourhood": f"central {city}",
-                    "nightly_usd": round(nightly, 2),
+                    "nightly": round(nightly, 2),
                     "rooms_needed": rooms,
-                    "total_usd": round(nightly * nights * rooms, 2),
+                    "total": round(nightly * nights * rooms, 2),
                 }
             )
-        return sorted(options, key=lambda o: o["total_usd"])
+        return sorted(options, key=lambda o: o["total"])
 
     def search_attractions(
         self, destination: str, interests: list[str], limit: int
@@ -148,7 +149,7 @@ class MockTravelProvider:
                 {
                     "name": f"{city} {kind}",
                     "category": category,
-                    "typical_cost_usd": cost,
+                    "typical_cost": cost,
                     "duration_minutes": minutes,
                     "rating": round(7.5 + ((base + i) % 25) / 10, 1),
                 }

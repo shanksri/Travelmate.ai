@@ -21,20 +21,21 @@ from app.agent.state import TravelState
 from app.models.itinerary import FlightLeg, Itinerary, LodgingOption
 from app.providers.base import TravelProvider
 
-# Rough daily-spend-per-person bands, used only to steer destination search
-# when the traveller didn't name one. Independent of any provider's internal
-# thresholds — providers are free to interpret these labels as they like.
-_LOW_BUDGET_DAILY_USD = 120
-_MEDIUM_BUDGET_DAILY_USD = 180
+# Rough daily-spend-per-person bands in rupees, used only to steer destination
+# search when the traveller didn't name one. Independent of any provider's
+# internal thresholds — providers are free to interpret these labels as they
+# like.
+_LOW_BUDGET_DAILY = 10_000
+_MEDIUM_BUDGET_DAILY = 15_000
 
 
 def _budget_level(request) -> str:
-    if request.budget_usd is None:
+    if request.budget is None:
         return "high"
-    daily_per_person = request.budget_usd / (request.nights + 1) / request.travelers
-    if daily_per_person <= _LOW_BUDGET_DAILY_USD:
+    daily_per_person = request.budget / (request.nights + 1) / request.travelers
+    if daily_per_person <= _LOW_BUDGET_DAILY:
         return "low"
-    if daily_per_person <= _MEDIUM_BUDGET_DAILY_USD:
+    if daily_per_person <= _MEDIUM_BUDGET_DAILY:
         return "medium"
     return "high"
 
@@ -104,7 +105,7 @@ def build_flight_node(provider: TravelProvider, llm: LLM):
             user=json.dumps(
                 {
                     "party_size": request.travelers,
-                    "budget_usd": request.budget_usd,
+                    "budget": request.budget,
                     "outbound_options": outbound,
                     "return_options": return_leg,
                 },
@@ -141,7 +142,7 @@ def build_hotel_node(provider: TravelProvider, llm: LLM):
                 {
                     "party_size": request.travelers,
                     "interests": request.interests,
-                    "budget_usd": request.budget_usd,
+                    "budget": request.budget,
                     "options": options,
                 },
                 default=str,
@@ -156,7 +157,7 @@ def build_hotel_node(provider: TravelProvider, llm: LLM):
 
 
 def _cheapest_flight(options: list[dict], rationale: str) -> FlightLeg | None:
-    """The provider already sorts by total_usd ascending — see mock.py — so
+    """The provider already sorts by total ascending — see mock.py — so
     the first option is the cheapest, for either provider's real equivalent
     too as long as it honours the same contract."""
     if not options:
@@ -187,19 +188,19 @@ def build_itinerary_node(provider: TravelProvider, llm: LLM, max_retries: int):
         )
         lodging = _lodging_options(state["hotel_results"].get("options", []))
 
-        flight_cost = (outbound_flight.total_usd or 0 if outbound_flight else 0) + (
-            return_flight.total_usd or 0 if return_flight else 0
+        flight_cost = (outbound_flight.total or 0 if outbound_flight else 0) + (
+            return_flight.total or 0 if return_flight else 0
         )
-        hotel_cost = lodging[0].total_usd or 0 if lodging else 0
+        hotel_cost = lodging[0].total or 0 if lodging else 0
 
         flight_note = (
             "No origin was given, so no flight is included in the cost below."
             if outbound_flight is None
-            else f"Outbound + return flight already booked: ${flight_cost:,.2f} total. "
+            else f"Outbound + return flight already booked: Rs {flight_cost:,.0f} total. "
             "Do not plan or re-cost the flight yourself."
         )
         hotel_note = (
-            f"Hotel already booked: {lodging[0].name}, ${hotel_cost:,.2f} total. "
+            f"Hotel already booked: {lodging[0].name}, Rs {hotel_cost:,.0f} total. "
             "Do not plan or re-cost lodging yourself."
             if lodging
             else "No lodging options were found."
@@ -244,7 +245,7 @@ def build_itinerary_node(provider: TravelProvider, llm: LLM, max_retries: int):
                 continue
 
             activity_cost = sum(
-                activity.estimated_cost_usd or 0
+                activity.estimated_cost or 0
                 for day in draft.days
                 for activity in day.activities
             )

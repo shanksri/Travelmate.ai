@@ -102,7 +102,7 @@ cp .env.example .env            # then put your OPENAI_API_KEY in it
 Plan a trip from the command line:
 
 ```bash
-python scripts/plan_trip.py --destination "Kyoto, Japan" --start 2026-04-10 --end 2026-04-15 --travelers 2 --budget 4000 --interests food,history
+python scripts/plan_trip.py --destination "Kyoto, Japan" --start 2026-04-10 --end 2026-04-15 --travelers 2 --budget 300000 --interests food,history
 ```
 
 Or run the API — and open `http://localhost:8000` for the frontend (plain
@@ -129,12 +129,12 @@ uvicorn app.main:app --reload
 ```bash
 curl -X POST localhost:8000/trips/plan -H 'content-type: application/json' -d '{
   "start_date": "2026-04-10", "end_date": "2026-04-14",
-  "travelers": 2, "origin": "Boston, MA",
-  "budget_usd": 3500, "interests": ["food", "history"], "pace": "balanced"
+  "travelers": 2, "origin": "Delhi",
+  "budget": 300000, "interests": ["food", "history"], "pace": "balanced"
 }'
 
 curl -X POST localhost:8000/trips/plan-from-prompt -H 'content-type: application/json' -d '{
-  "prompt": "Plan a complete 7 day Japan trip from Boston under $3000"
+  "prompt": "Plan a complete 7 day Japan trip from Delhi under 3 lakhs"
 }'
 ```
 
@@ -176,7 +176,7 @@ activity portion of the total cost is recomputed.
 
 Verified end-to-end on a real 4-day Kyoto trip: "more activities on day 3"
 took day 3 from 2 to 3 activities, left days 1, 2 and 4 byte-for-byte
-identical, and moved the total from $2,953.69 to $3,003.69. A follow-up
+identical, and moved the total from ₹2,953.69 to ₹3,003.69. A follow-up
 "make day 1 more relaxed" built on *that* version, swapping day 1's walking
 loop for a tea house while leaving the newly added day-3 activity in place.
 
@@ -199,6 +199,27 @@ loop for a tea house while leaving the newly added day-3 activity in place.
 | `app/store.py` | `TripStore` Protocol, `InMemoryTripStore`, and `SqlTripStore` (Postgres via Docker, or any SQLAlchemy engine) — append-only version history per `thread_id` |
 | `frontend/` | The plain HTML/CSS/JS frontend (dark theme, single prompt box) — served by `app/main.py`, no build step |
 | `scripts/run_server.py` | Launches the API from an absolute path — a workaround if something ever runs `uvicorn` from the wrong working directory and silently imports a same-named `app` package from elsewhere |
+
+## Currency
+
+**Everything is priced in Indian rupees.** Not converted at display time —
+rupee-native throughout: the mock provider generates rupee figures, the
+prompts ask the model for rupee amounts (and read "2 lakhs" / "1.5 crore"
+natively when parsing a budget), and no exchange rate exists anywhere in the
+codebase.
+
+Money fields are named for what they are rather than for a currency —
+`total`, `nightly`, `budget`, `estimated_cost`, `price_per_person` — and
+`Itinerary.currency` (default `INR`) says what they're denominated in.
+
+Trips stored before this switch are kept exactly as they were: their amounts
+are untouched and their `currency` stays `"USD"`, because relabelling dollars
+as rupees would silently multiply every price by ~85. Each model has a
+`model_validator(mode="before")` mapping the old `*_usd` field names onto the
+new ones, and both the frontend and the CLI pick their symbol from the trip's
+own `currency` — so an old trip still renders `$13,690` while a new one
+renders `₹2,30,610` (with Indian digit grouping, via `en-IN`). See
+`tests/test_legacy_usd_payloads.py`.
 
 ## Travel data
 

@@ -96,14 +96,14 @@ def revise_trip(
         # activity portion of the total is recomputed.
         outbound = itinerary.outbound_flight
         return_leg = itinerary.return_flight
-        flight_cost = (outbound.total_usd or 0 if outbound else 0) + (
-            return_leg.total_usd or 0 if return_leg else 0
+        flight_cost = (outbound.total or 0 if outbound else 0) + (
+            return_leg.total or 0 if return_leg else 0
         )
         hotel_cost = (
-            itinerary.lodging_options[0].total_usd or 0 if itinerary.lodging_options else 0
+            itinerary.lodging_options[0].total or 0 if itinerary.lodging_options else 0
         )
         activity_cost = sum(
-            activity.estimated_cost_usd or 0 for day in draft.days for activity in day.activities
+            activity.estimated_cost or 0 for day in draft.days for activity in day.activities
         )
 
         revised = Itinerary(

@@ -130,20 +130,20 @@ def test_itinerary_node_assembles_flights_and_lodging_from_real_search_data(
     # the structured pick — not whatever the LLM's free-text recommendation
     # said, so these numbers can't be hallucinated.
     assert itinerary.outbound_flight.carrier == outbound[0]["carrier"]
-    assert itinerary.outbound_flight.total_usd == outbound[0]["total_usd"]
+    assert itinerary.outbound_flight.total == outbound[0]["total"]
     assert itinerary.return_flight.origin == "Lisbon, Portugal"
-    assert itinerary.return_flight.total_usd == return_leg[0]["total_usd"]
+    assert itinerary.return_flight.total == return_leg[0]["total"]
     assert [h.name for h in itinerary.lodging_options] == [h["name"] for h in hotels]
 
     activity_cost = sum(
-        act["estimated_cost_usd"]
+        act["estimated_cost"]
         for day in draft_itinerary_payload(trip_request)["days"]
         for act in day["activities"]
     )
     expected_total = (
-        outbound[0]["total_usd"]
-        + return_leg[0]["total_usd"]
-        + hotels[0]["total_usd"]
+        outbound[0]["total"]
+        + return_leg[0]["total"]
+        + hotels[0]["total"]
         + activity_cost
     )
     assert itinerary.total_estimated_cost == expected_total
@@ -165,7 +165,7 @@ def test_itinerary_node_handles_no_flights_or_lodging_found(provider, trip_reque
     assert itinerary.return_flight is None
     assert itinerary.lodging_options == []
     assert itinerary.total_estimated_cost == sum(
-        act["estimated_cost_usd"]
+        act["estimated_cost"]
         for day in draft_itinerary_payload(trip_request)["days"]
         for act in day["activities"]
     )

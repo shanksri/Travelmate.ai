@@ -15,11 +15,11 @@ do not guess a specific date or number that was never mentioned.
 (e.g. "5 days", "a week" = 7) and no explicit end_date was given.
 - end_date: an explicit calendar date (YYYY-MM-DD), only if one was given.
 - travelers: how many people. Default 1 if not mentioned.
-- budget_usd: total budget for the whole party, in US dollars. If a different \
-currency was mentioned (e.g. "2 lakhs", "500 euros"), convert it using your \
-general knowledge of approximate exchange rates — infer which currency from \
-context (the origin or destination country) if not named explicitly. null if \
-no budget was mentioned at all.
+- budget: total budget for the whole party, in Indian rupees (INR). Read \
+Indian number words natively — "2 lakhs" is 200000, "1.5 crore" is 15000000. \
+If another currency was mentioned (e.g. "500 dollars", "500 euros"), convert \
+it to rupees using your general knowledge of approximate exchange rates. null \
+if no budget was mentioned at all.
 - interests: a list of themes mentioned (e.g. sightseeing, food, hiking) — \
 infer sensible ones from what they asked for even if not phrased as an \
 "interest".
@@ -27,7 +27,7 @@ infer sensible ones from what they asked for even if not phrased as an \
 - notes: anything else worth passing along, or null.
 
 Respond with a single JSON object with exactly these keys — destination,
-origin, start_date, end_date, duration_days, travelers, budget_usd,
+origin, start_date, end_date, duration_days, travelers, budget,
 interests, pace, notes — using null for anything not stated. No prose, no
 markdown fences."""
 
@@ -98,6 +98,10 @@ Rules:
 - Keep `notes` limited to logistics the traveller genuinely needs to know
   (budget risk, visa/weather caveats, a transition day's timing) — not general
   recommendations or commentary that belongs in an activity instead.
+- All money is in Indian rupees (INR). `estimated_cost` is a plain rupee
+  number — roughly 500 for a museum entry, 3000 for a guided day tour, 2000
+  for a good dinner. Never quote dollars or any other currency, and never
+  write a currency symbol inside the number.
 - If costs so far already threaten the stated budget, note that honestly in
   `notes` instead of inventing cheaper numbers.
 
@@ -116,7 +120,7 @@ Respond with JSON matching exactly this shape:
           "description": "2-3 sentences: what it is, specifically, and why it's worth the visit",
           "location": "where",
           "category": "food|sightseeing|transit|lodging|activity|rest",
-          "estimated_cost_usd": 25.0
+          "estimated_cost": 2000.0
         }
       ]
     }
@@ -145,6 +149,9 @@ Rules:
 - Every activity's `description` must still be 2-3 concrete sentences on what
   the place is and why it's worth the visit — the same bar as the original
   plan, including for activities you're adding now.
+- All money is in Indian rupees (INR). `estimated_cost` is a plain rupee
+  number — roughly 500 for a museum entry, 3000 for a guided day tour, 2000
+  for a good dinner. Never quote dollars or any other currency.
 
 Respond with JSON matching exactly the same shape you produced originally:
 {
@@ -161,7 +168,7 @@ Respond with JSON matching exactly the same shape you produced originally:
           "description": "2-3 sentences: what it is, specifically, and why it's worth the visit",
           "location": "where",
           "category": "food|sightseeing|transit|lodging|activity|rest",
-          "estimated_cost_usd": 25.0
+          "estimated_cost": 2000.0
         }
       ]
     }
@@ -188,8 +195,8 @@ def describe_request(request: TripRequest) -> str:
     ]
     if request.origin:
         lines.append(f"Origin: {request.origin}")
-    if request.budget_usd is not None:
-        lines.append(f"Total budget: ${request.budget_usd:,.0f} USD for the whole party")
+    if request.budget is not None:
+        lines.append(f"Total budget: Rs {request.budget:,.0f} (INR) for the whole party")
     if request.interests:
         lines.append(f"Interests: {', '.join(request.interests)}")
     if request.notes:

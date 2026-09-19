@@ -2,6 +2,14 @@
 
 `Itinerary` is the contract between the agent and everything else: the agent
 must produce one that validates, and the API returns exactly this shape.
+
+Money fields are deliberately currency-neutral (`total`, `nightly`, `budget`,
+`estimated_cost`) rather than named after a currency. What they're
+denominated in is `Itinerary.currency`, which is INR everywhere now. Trips
+stored before that switch carry `currency: "USD"` and their old `*_usd`
+field names, so each model below maps those old names onto the new ones —
+the amounts are left exactly as they were, because an old trip really was
+priced in dollars and relabelling it rupees would be a lie.
 """
 
 from datetime import date, timedelta
@@ -14,6 +22,24 @@ ActivityCategory = Literal[
 ]
 Pace = Literal["relaxed", "balanced", "packed"]
 
+DEFAULT_CURRENCY = "INR"
+
+
+def _rename_legacy_usd_fields(data: object, renames: dict[str, str]) -> object:
+    """Map pre-INR `*_usd` keys onto their currency-neutral replacements.
+
+    Only fills a new key that isn't already present, so a current payload is
+    untouched and a legacy one loads without its amounts being reinterpreted.
+    """
+    if not isinstance(data, dict):
+        return data
+
+    patched = dict(data)
+    for old, new in renames.items():
+        if old in patched and new not in patched:
+            patched[new] = patched.pop(old)
+    return patched
+
 
 class TripRequest(BaseModel):
     """What the traveller asks for."""
@@ -25,10 +51,15 @@ class TripRequest(BaseModel):
         default=None, description="Leave unset to let the agent suggest one."
     )
     origin: str | None = None
-    budget_usd: float | None = Field(default=None, gt=0)
+    budget: float | None = Field(default=None, gt=0, description="Total for the party.")
     interests: list[str] = Field(default_factory=list)
     pace: Pace = "balanced"
     notes: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_usd_names(cls, data: object) -> object:
+        return _rename_legacy_usd_fields(data, {"budget_usd": "budget"})
 
     @model_validator(mode="after")
     def _dates_are_ordered(self) -> "TripRequest":
@@ -57,7 +88,12 @@ class Activity(BaseModel):
     description: str = ""
     location: str | None = None
     category: ActivityCategory = "activity"
-    estimated_cost_usd: float | None = Field(default=None, ge=0)
+    estimated_cost: float | None = Field(default=None, ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_usd_names(cls, data: object) -> object:
+        return _rename_legacy_usd_fields(data, {"estimated_cost_usd": "estimated_cost"})
 
 
 class DayPlan(BaseModel):
@@ -77,11 +113,18 @@ class FlightLeg(BaseModel):
     depart_date: date
     stops: int = 0
     duration_hours: float | None = None
-    price_usd_per_person: float | None = Field(default=None, ge=0)
-    total_usd: float | None = Field(default=None, ge=0)
+    price_per_person: float | None = Field(default=None, ge=0)
+    total: float | None = Field(default=None, ge=0)
     rationale: str | None = Field(
         default=None, description="The flight agent's reasoning for this pick."
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_usd_names(cls, data: object) -> object:
+        return _rename_legacy_usd_fields(
+            data, {"price_usd_per_person": "price_per_person", "total_usd": "total"}
+        )
 
 
 class LodgingOption(BaseModel):
@@ -91,8 +134,13 @@ class LodgingOption(BaseModel):
     tier: str | None = None
     rating: float | None = None
     neighbourhood: str | None = None
-    nightly_usd: float | None = Field(default=None, ge=0)
-    total_usd: float | None = Field(default=None, ge=0)
+    nightly: float | None = Field(default=None, ge=0)
+    total: float | None = Field(default=None, ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_usd_names(cls, data: object) -> object:
+        return _rename_legacy_usd_fields(data, {"nightly_usd": "nightly", "total_usd": "total"})
 
 
 class DraftItinerary(BaseModel):
@@ -116,7 +164,7 @@ class Itinerary(BaseModel):
     return_flight: FlightLeg | None = None
     lodging_options: list[LodgingOption] = Field(default_factory=list)
     days: list[DayPlan]
-    currency: str = "USD"
+    currency: str = DEFAULT_CURRENCY
     total_estimated_cost: float | None = Field(default=None, ge=0)
     notes: list[str] = Field(default_factory=list)
 

@@ -2,7 +2,9 @@
 
     python scripts/plan_trip.py --destination "Kyoto, Japan" \
         --start 2026-04-10 --end 2026-04-15 --travelers 2 \
-        --budget 4000 --interests food,history
+        --budget 300000 --interests food,history
+
+Money is in Indian rupees throughout.
 
 Needs OPENAI_API_KEY. Travel data comes from the mock provider unless
 TRAVELMATE_PROVIDER says otherwise.
@@ -33,7 +35,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--destination", help="Omit to let the agent choose one.")
     parser.add_argument("--origin")
     parser.add_argument("--travelers", type=int, default=1)
-    parser.add_argument("--budget", type=float, help="Total USD for the party.")
+    parser.add_argument("--budget", type=float, help="Total INR for the whole party.")
     parser.add_argument("--interests", default="", help="Comma-separated.")
     parser.add_argument(
         "--pace", choices=["relaxed", "balanced", "packed"], default="balanced"
@@ -43,9 +45,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _render_flight(flight: FlightLeg) -> str:
+def _money(amount: float | None, currency: str = "INR") -> str:
+    """Rupees by default; a trip stored before the switch says so itself."""
+    if amount is None:
+        return ""
+    symbol = "₹" if currency == "INR" else "$"
+    return f"{symbol}{amount:,.0f}"
+
+
+def _render_flight(flight: FlightLeg, currency: str = "INR") -> str:
     stops = "nonstop" if flight.stops == 0 else f"{flight.stops} stop(s)"
-    price = f", ${flight.total_usd:,.0f} total" if flight.total_usd is not None else ""
+    price = f", {_money(flight.total, currency)} total" if flight.total is not None else ""
     return (
         f"{flight.carrier} — {flight.origin} -> {flight.destination}, "
         f"{flight.depart_date} ({stops}{price})"
@@ -59,7 +69,7 @@ def render(trip: PlannedTrip) -> str:
         f"{it.travelers} traveller(s)",
     ]
     if it.total_estimated_cost is not None:
-        lines.append(f"Estimated total: {it.currency} {it.total_estimated_cost:,.0f}")
+        lines.append(f"Estimated total: {_money(it.total_estimated_cost, it.currency)}")
     lines.append("")
 
     if trip.summary:
@@ -68,9 +78,9 @@ def render(trip: PlannedTrip) -> str:
 
     lines.append("Flights:")
     if it.outbound_flight:
-        lines.append(f"  Outbound: {_render_flight(it.outbound_flight)}")
+        lines.append(f"  Outbound: {_render_flight(it.outbound_flight, it.currency)}")
     if it.return_flight:
-        lines.append(f"  Return:   {_render_flight(it.return_flight)}")
+        lines.append(f"  Return:   {_render_flight(it.return_flight, it.currency)}")
     if not it.outbound_flight and not it.return_flight:
         lines.append("  (none — no origin was given, so nothing was booked)")
     lines.append("")
@@ -84,8 +94,9 @@ def render(trip: PlannedTrip) -> str:
                 bits.append(f"{hotel.rating} rating")
             tag = f" ({', '.join(bits)})" if bits else ""
             cost = (
-                f" — ${hotel.nightly_usd:,.0f}/night, ${hotel.total_usd:,.0f} total"
-                if hotel.nightly_usd is not None and hotel.total_usd is not None
+                f" — {_money(hotel.nightly, it.currency)}/night, "
+                f"{_money(hotel.total, it.currency)} total"
+                if hotel.nightly is not None and hotel.total is not None
                 else ""
             )
             lines.append(f"  {marker} {hotel.name}{tag}{cost}")
@@ -96,8 +107,8 @@ def render(trip: PlannedTrip) -> str:
         lines.append(f"Day {day.day} — {day.date}: {day.summary}")
         for act in day.activities:
             cost = (
-                f"  (~${act.estimated_cost_usd:,.0f})"
-                if act.estimated_cost_usd
+                f"  (~{_money(act.estimated_cost, it.currency)})"
+                if act.estimated_cost
                 else ""
             )
             where = f" @ {act.location}" if act.location else ""
@@ -129,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         destination=args.destination,
         origin=args.origin,
         travelers=args.travelers,
-        budget_usd=args.budget,
+        budget=args.budget,
         interests=[i.strip() for i in args.interests.split(",") if i.strip()],
         pace=args.pace,
         notes=args.notes,

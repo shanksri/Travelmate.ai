@@ -93,10 +93,16 @@ function escapeHtml(value) {
   return div.innerHTML;
 }
 
+// Set from the rendered trip's own `currency`, so a trip stored before the
+// switch to rupees still renders in the currency it was actually priced in.
+let tripCurrency = "INR";
+
 function money(amount) {
-  return amount === null || amount === undefined
-    ? null
-    : `$${Number(amount).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  if (amount === null || amount === undefined) return null;
+  // en-IN gives rupees their conventional grouping — 1,50,000 rather than 150,000.
+  const locale = tripCurrency === "INR" ? "en-IN" : undefined;
+  const symbol = tripCurrency === "INR" ? "₹" : "$";
+  return `${symbol}${Number(amount).toLocaleString(locale, { maximumFractionDigits: 0 })}`;
 }
 
 function renderFlightRow(label, flight) {
@@ -108,7 +114,7 @@ function renderFlightRow(label, flight) {
       </div>`;
   }
   const stops = flight.stops === 0 ? "nonstop" : `${flight.stops} stop(s)`;
-  const price = money(flight.total_usd);
+  const price = money(flight.total);
   return `
     <div class="flight-row">
       <span class="flight-label">${label}</span>
@@ -124,8 +130,8 @@ function renderHotelItem(hotel, isSelected) {
   if (hotel.tier) bits.push(escapeHtml(hotel.tier));
   if (hotel.rating !== null && hotel.rating !== undefined) bits.push(`${hotel.rating} rating`);
   const tag = bits.length ? ` (${bits.join(", ")})` : "";
-  const nightly = money(hotel.nightly_usd);
-  const total = money(hotel.total_usd);
+  const nightly = money(hotel.nightly);
+  const total = money(hotel.total);
   const cost = nightly && total ? ` — ${nightly}/night, ${total} total` : "";
   return `
     <li class="${isSelected ? "selected" : ""}">
@@ -135,7 +141,7 @@ function renderHotelItem(hotel, isSelected) {
 }
 
 function renderActivity(activity) {
-  const cost = money(activity.estimated_cost_usd);
+  const cost = money(activity.estimated_cost);
   const where = activity.location ? ` @ ${escapeHtml(activity.location)}` : "";
   return `
     <div class="activity">
@@ -158,6 +164,7 @@ function renderDay(day) {
 
 function renderTrip(trip) {
   const it = trip.itinerary;
+  tripCurrency = it.currency || "INR";
   const total = money(it.total_estimated_cost);
 
   resultEl.hidden = false;
@@ -169,7 +176,7 @@ function renderTrip(trip) {
 
     <div class="card trip-header">
       <h2>${escapeHtml(it.destination)} — ${escapeHtml(it.start_date)} to ${escapeHtml(it.end_date)}, ${it.travelers} traveller(s)</h2>
-      ${total ? `<p class="trip-cost">Estimated total: ${it.currency} ${total}</p>` : ""}
+      ${total ? `<p class="trip-cost">Estimated total: ${total}</p>` : ""}
       ${trip.summary ? `<p class="summary">${escapeHtml(trip.summary)}</p>` : ""}
     </div>
 

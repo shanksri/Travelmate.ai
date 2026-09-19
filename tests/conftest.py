@@ -39,7 +39,7 @@ def trip_request() -> TripRequest:
         travelers=2,
         destination="Lisbon, Portugal",
         origin="Boston, MA",
-        budget_usd=3000,
+        budget=250_000,
         interests=["food", "history"],
         pace="balanced",
     )
@@ -64,7 +64,7 @@ def draft_itinerary_payload(request: TripRequest) -> dict:
                         "description": "Morning stroll.",
                         "location": "Alfama",
                         "category": "sightseeing",
-                        "estimated_cost_usd": 20,
+                        "estimated_cost": 2_000,
                     }
                 ],
             }

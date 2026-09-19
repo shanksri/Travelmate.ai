@@ -42,7 +42,7 @@ class ParsedPrompt(BaseModel):
     end_date: date | None = None
     duration_days: int | None = Field(default=None, ge=1, le=60)
     travelers: int = Field(default=1, ge=1, le=20)
-    budget_usd: float | None = Field(default=None, gt=0)
+    budget: float | None = Field(default=None, gt=0)
     interests: list[str] = Field(default_factory=list)
     pace: Pace = "balanced"
     notes: str | None = None
@@ -115,7 +115,7 @@ def parse_trip_prompt(
                 travelers=parsed.travelers,
                 destination=parsed.destination,
                 origin=parsed.origin,
-                budget_usd=parsed.budget_usd,
+                budget=parsed.budget,
                 interests=parsed.interests,
                 pace=parsed.pace,
                 notes=parsed.notes,
