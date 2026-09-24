@@ -572,4 +572,7 @@ into the pipeline (see "Real fetch clients" above) — that's the next step,
 alongside deciding on a train-data source.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the original diagram this was built
-from and what's implemented vs. deferred.
+from and what's implemented vs. deferred, and
+[docs/BUILD_LOG.md](docs/BUILD_LOG.md) for the step-by-step history of how it
+got here — every change, the decisions behind them, and the bugs found along
+the way.

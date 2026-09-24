@@ -3,6 +3,10 @@
 The diagram this project was built from — a 4-agent LangGraph pipeline with a
 shared `TravelState` and long-term memory in PostgreSQL.
 
+> For the step-by-step history of what was actually built, in order, see
+> [BUILD_LOG.md](BUILD_LOG.md). This page is about the original plan and how
+> the result compares to it.
+
 ![TripMate AI roadmap](roadmap.png)
 
 > This is a Multi Agents travel planner that turns a natural-language trip
