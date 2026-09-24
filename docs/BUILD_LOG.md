@@ -443,6 +443,24 @@ same one. The return leg found three, and there Cheapest (12 Oct) and Fastest
 (14 Oct, 3h 18m) genuinely differ. `DATE_WINDOW_DAYS` is the one line to change
 if the tables are too thin.
 
+### Step 24 · Drop the Flights card; fix shared city names (`dae969b`, 2026-09-24)
+
+- **Flights summary card removed** from the frontend, as asked. The per-leg
+  cheapest/fastest tables remain.
+- **"Kochi" was going to Japan.** The user saw ₹43,480 for Varanasi→Kochi
+  where Cleartrip showed ₹8k. Two causes, both found by checking rather than
+  guessing: the server was on `mock`, so "Northwind" and its price were
+  invented; and under `live`, "Kochi" resolved to **Kochi, Japan (`KCZ`)**,
+  since both Kochis are flightable and Japan's comes first. `resolve_route`
+  now resolves both ends together and prefers a shared country when a name is
+  ambiguous.
+
+**What the check also showed:** even with the right airport (`COK`), the cache
+held **two Varanasi→Cochin fares in all of October**, none within five days
+of 8 Oct. Where a fare exists, it's in line with Cleartrip (₹9,157 on 3 Oct vs
+₹8k). The pricing is sound; the coverage isn't — a cached-fare API can't match
+a live search on a quieter route.
+
 ---
 
 ## Where things stand
