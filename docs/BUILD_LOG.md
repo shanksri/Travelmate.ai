@@ -370,6 +370,81 @@ the rendered page contains 20 rupee symbols and zero dollar signs.
 
 ---
 
+## Phase 9 — Real flight fares
+
+### Step 22 · Remove the Notes card and per-activity prices (`876b2ee`, 2026-09-24)
+
+Both removed from the frontend and the CLI, at the user's request. Neither had
+been asked for in the first place — they were additions of mine, and the
+feedback was direct: don't add things that weren't asked for.
+
+### Step 23 · Real fares, cheapest vs. fastest per leg (`876b2ee`, 2026-09-24)
+
+`TRAVELMATE_PROVIDER=live` now serves **real flight fares**, from
+**Travelpayouts** (Aviasales) rather than AviationStack — AviationStack has no
+fare data at all, only schedules and status. Lodging, attractions and weather
+stay mock (`LiveTravelProvider` subclasses the mock provider and overrides
+exactly one method).
+
+**Choosing the API** took some digging, since the landscape shifted this year:
+Amadeus shut its free self-service tier on 17 July 2026, and Kiwi's Tequila
+went invite-only. On the Travelpayouts side, the tools page's "Data API" card
+turned out to be affiliate *statistics*, not fares; the fare API comes with
+connecting to the Aviasales program. The first token added was the 63-character
+`travelpayouts-…` one, which gets `401` on every fare endpoint — so does
+sending no token at all, which is how it became clear the account wasn't
+entitled rather than the token being malformed. The 32-character hex token
+from the Aviasales program's API section works. **INR is supported.**
+
+**What was built:**
+
+- `app/providers/travelpayouts.py` on `/aviasales/v3/prices_for_dates`:
+  operating airline, flight number, departure time, per-leg duration, stops,
+  price. Place names resolve to IATA codes through Travelpayouts' own city
+  directory.
+- Each leg is searched **±1 day** around the travel date (the user's choice,
+  over exact-date-only or a wider window). Every option is kept on the
+  itinerary as `outbound_options` / `return_options`.
+- One table per leg, **Flight | Price** columns, **Cheapest | Fastest** rows,
+  up to three flights per row, each with duration, stops, date and local
+  departure time.
+- The flight **booked** is the cheapest on the travel date itself; a cheaper
+  one a day early is listed, not booked. It only falls back to a neighbouring
+  day when nothing departs on the date.
+
+**Bugs found by running it against the live API before committing:**
+
+1. **The first endpoint ignored travel dates.** `/v2/prices/latest` returns
+   the year's cheapest fares: a 10–13 October trip got an outbound on
+   5 October and a return on 29 September. Mock data hid it completely,
+   because it stamps whatever date it's given. Also, its live response turned
+   out to include `duration` even though the published docs omit it — trust
+   the live API over the docs, in both directions.
+2. **The flight agent kept predicting the wrong booking.** Asked to explain
+   "the booked flight", it named the cheaper day-early flight as "chosen" —
+   and still did after its prompt was reworded to describe the date rule.
+   Fixed structurally: the booked flight is computed *before* the LLM call
+   and handed over as `booked_outbound` / `booked_return`. Same lesson as the
+   Step 9 hotel bug — an agent's text should describe decisions, never
+   anticipate them.
+3. **"Delhi" resolved to the wrong city** in testing: an exact-name match on a
+   city with no flightable airport beat New Delhi's partial match. Flightable
+   matches now win.
+4. **My own first version fell back to mock flights** when a route had no
+   cached fares. Removed before it shipped: invented flights next to real ones
+   are indistinguishable on the page. No fares now means no flights, and the
+   itinerary agent is told "no fares were found" rather than the old, now-false
+   "no origin was given".
+
+**Measured limit worth knowing:** the cache holds roughly **one fare per route
+per day**. The ±1-day window around 10 October on Delhi→Mumbai — one of India's
+busiest routes — found a single outbound flight, so both of its rows showed the
+same one. The return leg found three, and there Cheapest (12 Oct) and Fastest
+(14 Oct, 3h 18m) genuinely differ. `DATE_WINDOW_DAYS` is the one line to change
+if the tables are too thin.
+
+---
+
 ## Where things stand
 
 | Area | State |
@@ -377,17 +452,16 @@ the rendered page contains 20 rupee symbols and zero dollar signs.
 | Agent pipeline | ✅ 5 nodes, parallel flight/hotel, JSON-validated itinerary with retries |
 | Persistence | ✅ Postgres, append-only version history per `thread_id` |
 | Revisions | ✅ Backend + API — **no frontend UI yet** |
-| Frontend | ✅ Dark theme, free-text prompt, rupee rendering — no history/revise UI |
-| Travel data | ⚠️ Still the **mock provider**. Real fetch clients (AviationStack, Tavily, Open-Meteo) are built and tested but **not wired into `TravelProvider`** |
+| Frontend | ✅ Dark theme, free-text prompt, rupee rendering, cheapest/fastest flight table per leg — no history/revise UI |
+| Travel data | ⚠️ **Flights are real** under `TRAVELMATE_PROVIDER=live` (Travelpayouts). Lodging, attractions and weather are **still mock**. The `.env` default is still `mock` |
 | MCP | ✅ One client (Tavily remote), two servers (AviationStack, weather) — all standalone |
 | Currency | ✅ Rupee-native, with legacy USD trips preserved |
-| Tests | ✅ 133 passing, `ruff` clean |
+| Tests | ✅ 159 passing, `ruff` clean |
 | GitHub | ❌ Never pushed — `gh auth login` was never completed, no remote configured |
 
 **Obvious next steps**, roughly in order of value:
 
-1. Wire a real fetch client into `TravelProvider` as the `live` source — the
-   single biggest gap between this and a real product.
+1. Real lodging data — the next-biggest gap now that flights are real.
 2. Frontend UI for trip history and revisions (backend is done).
 3. Day-level patch revisions, if revision latency matters.
 4. Push to GitHub.
