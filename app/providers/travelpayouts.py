@@ -67,8 +67,9 @@ def _cities(timeout: float = 60.0) -> list[dict]:
 
 
 @lru_cache(maxsize=256)
-def resolve_iata(place: str) -> str | None:
-    """Best-effort IATA city code for a place name, or None.
+def _matches(place: str) -> tuple[dict, ...]:
+    """The best tier of city matches for a place name, best first; possibly
+    several when the name is shared (there's a Kochi in India and in Japan).
 
     Takes the part before any comma, so "Kyoto, Japan" resolves like "Kyoto".
     Prefers an exact name match, then a city whose name contains the query —
@@ -76,7 +77,7 @@ def resolve_iata(place: str) -> str | None:
     """
     name = place.split(",")[0].strip().lower()
     if not name:
-        return None
+        return ()
 
     exact, partial = [], []
     for city in _cities():
@@ -96,8 +97,37 @@ def resolve_iata(place: str) -> str | None:
     # exactly-named dead end is worse than a nearby usable airport.
     for candidates in (flightable(exact), flightable(partial), exact, partial):
         if candidates:
-            return candidates[0].get("code")
-    return None
+            return tuple(candidates)
+    return ()
+
+
+def resolve_iata(place: str) -> str | None:
+    """Best-effort IATA city code for one place name on its own, or None."""
+    matches = _matches(place)
+    return matches[0].get("code") if matches else None
+
+
+def resolve_route(origin: str, destination: str) -> tuple[str | None, str | None]:
+    """IATA codes for both ends of a route, resolving shared names together.
+
+    "Kochi" alone is ambiguous — Kochi, Japan (KCZ) and Kochi/Cochin, India
+    (COK) are both flightable, and Japan's comes first in the directory. A
+    real "Varanasi -> Kochi" search went to Japan and found nothing. So when
+    a name is shared, prefer the match in the same country as the other end
+    of the route; if no pair shares a country, each end keeps its best match.
+    """
+    from_matches, to_matches = _matches(origin), _matches(destination)
+    if not from_matches or not to_matches:
+        return (
+            from_matches[0].get("code") if from_matches else None,
+            to_matches[0].get("code") if to_matches else None,
+        )
+
+    for a in from_matches:
+        for b in to_matches:
+            if a.get("country_code") and a.get("country_code") == b.get("country_code"):
+                return a.get("code"), b.get("code")
+    return from_matches[0].get("code"), to_matches[0].get("code")
 
 
 # --- Fares ----------------------------------------------------------------
@@ -197,8 +227,7 @@ def search_flights(
     raising when either place can't be resolved — a trip should still plan
     without flights, exactly as it does when no origin was given.
     """
-    origin_code = resolve_iata(origin)
-    destination_code = resolve_iata(destination)
+    origin_code, destination_code = resolve_route(origin, destination)
     if not origin_code or not destination_code or origin_code == destination_code:
         return []
 

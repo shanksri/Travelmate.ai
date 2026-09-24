@@ -240,7 +240,9 @@ gets `401` on every fare endpoint).
 returns the operating airline, flight number, departure time, per-leg
 duration, stops and price in rupees. Place names resolve to IATA codes through
 Travelpayouts' own city directory ("Delhi" → New Delhi's `DEL`, preferring a
-flightable airport).
+flightable airport). A shared name resolves to the match in the same country
+as the other end of the route — there's a flightable Kochi in both Japan
+(`KCZ`) and India (`COK`), and Japan's comes first in the directory.
 
 Each leg is searched **one day either side of the travel date**
 (`DATE_WINDOW_DAYS`), and every option found is kept on the itinerary
@@ -254,9 +256,13 @@ falls back to another day when nothing departs on the date.
 Limits of this data, measured against the live API:
 
 - **Cached, not live** — indicative prices, not bookable quotes.
-- **Sparse** — roughly one fare per route per day. A ±1-day search around
-  10 Oct on Delhi→Mumbai, one of India's busiest routes, found a single
-  flight. Widening `DATE_WINDOW_DAYS` is a one-line change.
+- **Sparse** — roughly one fare per route per day on a busy route, and far
+  less on a quieter one. A ±1-day search around 10 Oct on Delhi→Mumbai found
+  a single flight; Varanasi→Cochin had **two fares in all of October**, none
+  within five days of 8 Oct, while Cleartrip showed ₹8k that day. When the
+  cache does have a fare, the price is in line (₹9,157 on 3 Oct). Widening
+  `DATE_WINDOW_DAYS` is a one-line change, but only a live search fixes the
+  coverage itself.
 - If a route has no cached fares, the trip plans **without flights** rather
   than falling back to mock ones, which would be indistinguishable from real
   fares on the page.

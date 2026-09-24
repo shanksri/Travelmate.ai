@@ -12,9 +12,11 @@ from app.models.itinerary import FlightLeg
 from app.providers import travelpayouts
 from app.providers.travelpayouts import (
     TravelPayoutsError,
+    _matches,
     fetch_prices,
     normalize_prices,
     resolve_iata,
+    resolve_route,
 )
 
 
@@ -48,17 +50,22 @@ SAMPLE_CITIES = [
     {"name": "Mumbai", "code": "BOM", "country_code": "IN", "has_flightable_airport": True},
     {"name": "Delhi", "code": "XXX", "country_code": "US", "has_flightable_airport": False},
     {"name": "Lisbon", "code": "LIS", "country_code": "PT", "has_flightable_airport": True},
+    # Both real and flightable; Japan's comes first in the live directory too.
+    {"name": "Kochi", "code": "KCZ", "country_code": "JP", "has_flightable_airport": True},
+    {"name": "Kochi", "code": "COK", "country_code": "IN", "has_flightable_airport": True},
+    {"name": "Varanasi", "code": "VNS", "country_code": "IN", "has_flightable_airport": True},
+    {"name": "Tokyo", "code": "TYO", "country_code": "JP", "has_flightable_airport": True},
 ]
 
 
 @pytest.fixture(autouse=True)
 def _fake_city_directory(monkeypatch):
-    """resolve_iata is lru_cached, so the cache has to be cleared around each
+    """Name matching is lru_cached, so the cache has to be cleared around each
     test or the first one's data leaks into the rest."""
-    resolve_iata.cache_clear()
+    _matches.cache_clear()
     monkeypatch.setattr(travelpayouts, "_cities", lambda *a, **k: SAMPLE_CITIES)
     yield
-    resolve_iata.cache_clear()
+    _matches.cache_clear()
 
 
 # --- resolve_iata ----------------------------------------------------------
@@ -81,6 +88,27 @@ def test_prefers_a_flightable_airport_over_an_exact_name_match():
 
 def test_unknown_place_resolves_to_none():
     assert resolve_iata("Atlantis") is None
+
+
+def test_a_shared_name_resolves_to_the_same_country_as_the_other_end():
+    """A real Varanasi -> Kochi search went to Kochi, Japan and found nothing."""
+    assert resolve_route("Varanasi", "Kochi") == ("VNS", "COK")
+
+
+def test_the_same_country_rule_works_from_either_end():
+    assert resolve_route("Kochi", "Varanasi") == ("COK", "VNS")
+
+
+def test_a_shared_name_still_goes_abroad_when_the_other_end_is_abroad():
+    assert resolve_route("Tokyo", "Kochi") == ("TYO", "KCZ")
+
+
+def test_a_route_with_no_shared_country_keeps_each_best_match():
+    assert resolve_route("Mumbai", "Lisbon") == ("BOM", "LIS")
+
+
+def test_a_route_with_an_unknown_end_resolves_that_end_to_none():
+    assert resolve_route("Atlantis", "Mumbai") == (None, "BOM")
 
 
 # --- fetch_prices ----------------------------------------------------------

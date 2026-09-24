@@ -105,26 +105,6 @@ function money(amount) {
   return `${symbol}${Number(amount).toLocaleString(locale, { maximumFractionDigits: 0 })}`;
 }
 
-function renderFlightRow(label, flight) {
-  if (!flight) {
-    return `
-      <div class="flight-row">
-        <span class="flight-label">${label}</span>
-        <span class="flight-none">not included</span>
-      </div>`;
-  }
-  const stops = flight.stops === 0 ? "nonstop" : `${flight.stops} stop(s)`;
-  const price = money(flight.total);
-  return `
-    <div class="flight-row">
-      <span class="flight-label">${label}</span>
-      <span>
-        ${escapeHtml(flight.carrier)} — ${escapeHtml(flight.origin)} → ${escapeHtml(flight.destination)},
-        ${escapeHtml(flight.depart_date)} (${stops}${price ? `, ${price} total` : ""})
-      </span>
-    </div>`;
-}
-
 const OPTIONS_PER_ROW = 3;
 
 function flightDuration(hours) {
@@ -251,12 +231,6 @@ function renderTrip(trip) {
       <h2>${escapeHtml(it.destination)} — ${escapeHtml(it.start_date)} to ${escapeHtml(it.end_date)}, ${it.travelers} traveller(s)</h2>
       ${total ? `<p class="trip-cost">Estimated total: ${total}</p>` : ""}
       ${trip.summary ? `<p class="summary">${escapeHtml(trip.summary)}</p>` : ""}
-    </div>
-
-    <div class="card">
-      <h3>Flights</h3>
-      ${renderFlightRow("Outbound", it.outbound_flight)}
-      ${renderFlightRow("Return", it.return_flight)}
     </div>
 
     ${renderFlightTable("Outbound options", it.outbound_options)}
