@@ -461,6 +461,36 @@ of 8 Oct. Where a fare exists, it's in line with Cleartrip (₹9,157 on 3 Oct vs
 ₹8k). The pricing is sound; the coverage isn't — a cached-fare API can't match
 a live search on a quieter route.
 
+### Step 25 · Google Flights via SerpApi's MCP server (`5773bb7`, 2026-09-24)
+
+**Travelpayouts' live-search API was out of reach**: it requires 50,000
+confirmed monthly active users, with "no exceptions" — confirmed from their
+help center article directly. So the live flight source moved to **Google
+Flights via SerpApi** (free plan: 100 searches/month).
+
+The user asked to use SerpApi's **MCP server** rather than its REST API. There
+is an official hosted one (`https://mcp.serpapi.com/mcp`, one `search` tool for
+every engine), so `app/providers/google_flights.py` is an **MCP client** — the
+second in this project after the Tavily one. The key goes in a Bearer header,
+not the URL path, because the MCP SDK logs every request URL.
+
+- One search per leg, on the exact date — no date window needed, since one
+  date returns many flights. The ±1-day window and the Travelpayouts fare
+  client were deleted.
+- Place-name resolution moved to `app/providers/iata.py`, still on
+  Travelpayouts' **free public directories** (no key), and now expands
+  multi-airport cities: Google Flights wants airport codes, and `TYO` isn't one.
+- Google sometimes lists a flight with no price; those are skipped.
+
+**Verified live**: the same Varanasi→Cochin trip that had zero cached fares
+returned **9 outbound and 5 return flights** on the exact dates, cheapest
+₹9,131 (Cleartrip: ~₹8k), and the Cheapest and Fastest rows now show genuinely
+different flights. The flight agent's explanation matched the booked flight.
+
+**Also changed by the user**: the Travelpayouts and AviationStack keys were
+removed from `.env`. The AviationStack MCP server (Step 17) is still in the
+code but now has no key; whether to keep or delete it is undecided.
+
 ---
 
 ## Where things stand
@@ -471,10 +501,10 @@ a live search on a quieter route.
 | Persistence | ✅ Postgres, append-only version history per `thread_id` |
 | Revisions | ✅ Backend + API — **no frontend UI yet** |
 | Frontend | ✅ Dark theme, free-text prompt, rupee rendering, cheapest/fastest flight table per leg — no history/revise UI |
-| Travel data | ⚠️ **Flights are real** under `TRAVELMATE_PROVIDER=live` (Travelpayouts). Lodging, attractions and weather are **still mock**. The `.env` default is still `mock` |
-| MCP | ✅ One client (Tavily remote), two servers (AviationStack, weather) — all standalone |
+| Travel data | ⚠️ **Flights are real** under `TRAVELMATE_PROVIDER=live` (Google Flights via SerpApi's MCP server, 100 searches/month). Lodging, attractions and weather are **still mock**. The `.env` default is still `mock` |
+| MCP | ✅ Two clients (SerpApi — used by the planner for flights; Tavily — standalone), two servers (AviationStack — now keyless, weather) |
 | Currency | ✅ Rupee-native, with legacy USD trips preserved |
-| Tests | ✅ 159 passing, `ruff` clean |
+| Tests | ✅ 168 passing, `ruff` clean |
 | GitHub | ❌ Never pushed — `gh auth login` was never completed, no remote configured |
 
 **Obvious next steps**, roughly in order of value:
