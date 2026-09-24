@@ -491,6 +491,33 @@ different flights. The flight agent's explanation matched the booked flight.
 removed from `.env`. The AviationStack MCP server (Step 17) is still in the
 code but now has no key; whether to keep or delete it is undecided.
 
+### Step 26 · Cache flight searches (`8077f80`, 2026-09-24)
+
+With 100 SerpApi searches a month and two per trip, re-planning the same trip
+was burning quota for identical results. The user asked about using a second
+SerpApi account instead; that was advised against — SerpApi's terms reserve
+the right to limit use per person and household and to terminate for
+circumvention — and caching was chosen as the legitimate way to stretch it.
+
+- `app/providers/flight_cache.py` caches each **raw, per-adult** search for
+  `TRAVELMATE_FLIGHT_CACHE_TTL_HOURS` (default 6; 0 disables), keyed by
+  airports and date — so different party sizes on the same route share one
+  search. Failed searches are never cached.
+- It follows `TRAVELMATE_STORE`: in memory, or a `flight_search_cache` table
+  in Postgres. Postgres matters because `uvicorn --reload` restarts the
+  process on every code change, which would keep wiping an in-memory cache.
+  Timestamps are stored as epoch seconds to avoid naive-vs-aware datetime
+  differences between Postgres and SQLite. Expired rows are pruned on write.
+
+**Verified against the real Postgres**, in two separate processes to stand in
+for a restart: the same Varanasi↔Kochi searches took **2 real searches and
+7.8s** the first time, **0 and 1.1s** the second.
+
+**Also found this round:** the user reported "wrong" return flights — they
+were mock data (the server is still on `TRAVELMATE_PROVIDER=mock`); the exact
+figures reproduced from the mock provider. Second time mock data has passed
+for real on the page.
+
 ---
 
 ## Where things stand
@@ -501,10 +528,10 @@ code but now has no key; whether to keep or delete it is undecided.
 | Persistence | ✅ Postgres, append-only version history per `thread_id` |
 | Revisions | ✅ Backend + API — **no frontend UI yet** |
 | Frontend | ✅ Dark theme, free-text prompt, rupee rendering, cheapest/fastest flight table per leg — no history/revise UI |
-| Travel data | ⚠️ **Flights are real** under `TRAVELMATE_PROVIDER=live` (Google Flights via SerpApi's MCP server, 100 searches/month). Lodging, attractions and weather are **still mock**. The `.env` default is still `mock` |
+| Travel data | ⚠️ **Flights are real** under `TRAVELMATE_PROVIDER=live` (Google Flights via SerpApi's MCP server, 100 searches/month, cached 6h). Lodging, attractions and weather are **still mock**. The `.env` default is still `mock` |
 | MCP | ✅ Two clients (SerpApi — used by the planner for flights; Tavily — standalone), two servers (AviationStack — now keyless, weather) |
 | Currency | ✅ Rupee-native, with legacy USD trips preserved |
-| Tests | ✅ 168 passing, `ruff` clean |
+| Tests | ✅ 184 passing, `ruff` clean |
 | GitHub | ❌ Never pushed — `gh auth login` was never completed, no remote configured |
 
 **Obvious next steps**, roughly in order of value:
