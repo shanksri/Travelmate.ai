@@ -10,12 +10,14 @@ Talks MCP to `https://mcp.serpapi.com/mcp` (streamable HTTP), calling its
 `Authorization: Bearer` header rather than the URL path SerpApi also accepts:
 the MCP SDK logs every request URL, so a key in the path lands in the logs.
 
-Each call is one search against SerpApi's quota (100/month on the free plan),
-and a trip makes two — one per leg.
+Each uncached call is one search against SerpApi's quota (100/month on the
+free plan), and a trip makes two — one per leg. Repeat searches for the same
+airports and date are served from `app/providers/flight_cache.py`.
 """
 
 import asyncio
 import json
+import logging
 import os
 from datetime import date
 from typing import Any
@@ -26,9 +28,12 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import CallToolResult
 
+from app.providers.flight_cache import get_flight_cache
 from app.providers.iata import airports_for, resolve_route
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 MCP_URL = "https://mcp.serpapi.com/mcp"
 
@@ -64,7 +69,19 @@ def fetch_flights(
 
     `departure_ids` / `arrival_ids` are airport codes, comma-separated for a
     multi-airport city ("NRT,HND"). Prices are per adult, in rupees.
+
+    A search for the same airports and date within `flight_cache_ttl_hours`
+    is served from the cache instead of spending another SerpApi search.
+    Failed searches are never cached.
     """
+    cache_key = f"google_flights:v1:{departure_ids}:{arrival_ids}:{outbound_date}"
+    cache = get_flight_cache()
+    cached = cache.get(cache_key)
+    if cached is not None:
+        logger.info("flight search cache hit: %s -> %s on %s", departure_ids, arrival_ids,
+                    outbound_date)
+        return cached
+
     params = {
         "engine": "google_flights",
         "departure_id": departure_ids,
@@ -96,6 +113,8 @@ def fetch_flights(
         payload = json.loads(payload["result"])
     if payload.get("error"):
         raise GoogleFlightsError(str(payload["error"]))
+
+    cache.put(cache_key, payload)
     return payload
 
 

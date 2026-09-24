@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     store: Literal["memory", "postgres"] = "memory"
     database_url: str = "postgresql+psycopg://travelmate:travelmate@localhost:5433/travelmate"
 
+    # How long a live flight search is reused before searching again. Every
+    # search spends SerpApi quota (100/month on the free plan), so re-planning
+    # the same route and date within this window costs nothing. 0 disables it.
+    flight_cache_ttl_hours: float = 6.0
+
     log_level: str = "INFO"
 
 

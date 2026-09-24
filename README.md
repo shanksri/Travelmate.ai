@@ -259,8 +259,16 @@ flights** on the exact dates, cheapest ₹9,131 (Cleartrip showed ~₹8k).
 
 Limits:
 
-- **100 searches/month** on SerpApi's free plan, and every trip spends two.
-  Tests never touch it — they mock the MCP round trip.
+- **100 searches/month** on SerpApi's free plan, and every *new* route and date
+  spends one search per leg. Searches are **cached** for
+  `TRAVELMATE_FLIGHT_CACHE_TTL_HOURS` (default 6) in
+  `app/providers/flight_cache.py`, keyed by airports and date: re-planning the
+  same trip within that window costs nothing (measured: 2 searches / 7.8s the
+  first time, 0 / 1.1s the second). It's the raw per-adult result that's
+  cached, so different party sizes share it. It lives in a
+  `flight_search_cache` table under `TRAVELMATE_STORE=postgres`, so it survives
+  `uvicorn --reload` restarts; failed searches are never cached. Tests never
+  touch the real API — they mock the MCP round trip.
 - Google occasionally lists a flight with no price; those are skipped.
 - If a search finds nothing or fails, the trip plans **without flights** rather
   than falling back to mock ones, which would be indistinguishable from real

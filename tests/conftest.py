@@ -110,6 +110,17 @@ class BlockedNetworkCall(RuntimeError):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_flight_cache():
+    """The flight cache is a process-wide singleton; without this, one test's
+    cached search would answer the next test's identical one."""
+    from app.providers.flight_cache import get_flight_cache
+
+    get_flight_cache.cache_clear()
+    yield
+    get_flight_cache.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _block_real_network_calls(monkeypatch):
     """app/providers/aviationstack.py and tavily.py call load_dotenv() at
     import time, so real API keys are sitting in os.environ during every test
