@@ -82,7 +82,7 @@ def render(trip: PlannedTrip) -> str:
     if it.return_flight:
         lines.append(f"  Return:   {_render_flight(it.return_flight, it.currency)}")
     if not it.outbound_flight and not it.return_flight:
-        lines.append("  (none — no origin was given, so nothing was booked)")
+        lines.append("  (none — no origin was given, or no fares were found)")
     lines.append("")
 
     if it.lodging_options:
@@ -106,21 +106,12 @@ def render(trip: PlannedTrip) -> str:
     for day in it.days:
         lines.append(f"Day {day.day} — {day.date}: {day.summary}")
         for act in day.activities:
-            cost = (
-                f"  (~{_money(act.estimated_cost, it.currency)})"
-                if act.estimated_cost
-                else ""
-            )
             where = f" @ {act.location}" if act.location else ""
-            lines.append(f"  {act.time}  {act.title}{where}{cost}")
+            lines.append(f"  {act.time}  {act.title}{where}")
             if act.description:
                 lines.append(f"          {act.description}")
         lines.append("")
 
-    if it.notes:
-        lines.append("Notes:")
-        lines.extend(f"  - {note}" for note in it.notes)
-        lines.append("")
     lines.append(f"[trip {trip.id} · {len(trip.agent_trace)} agent step(s)]")
     return "\n".join(lines)
 

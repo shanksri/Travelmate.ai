@@ -125,6 +125,81 @@ function renderFlightRow(label, flight) {
     </div>`;
 }
 
+const OPTIONS_PER_ROW = 3;
+
+function flightDuration(hours) {
+  if (hours === null || hours === undefined) return "—";
+  const h = Math.floor(hours);
+  const m = Math.round((hours - h) * 60);
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+
+// Read straight off the ISO string rather than through `new Date(...)`, which
+// would shift the time into the viewer's timezone — a 06:00 departure from
+// Delhi should read 06:00 wherever the page is opened.
+function flightWhen(flight) {
+  const iso = flight.departure_at || flight.depart_date;
+  if (!iso) return "";
+  const day = new Date(`${iso.slice(0, 10)}T00:00:00`).toLocaleDateString("en-IN", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  });
+  return flight.departure_at ? `${day}, ${iso.slice(11, 16)}` : day;
+}
+
+function renderFlightOption(flight) {
+  const stops = flight.stops === 0 ? "nonstop" : `${flight.stops} stop(s)`;
+  const price = money(flight.total);
+  return `
+    <div class="option-row">
+      <span class="option-info">
+        <span class="option-duration">${flightDuration(flight.duration_hours)}</span>
+        <span class="option-stops">${stops}</span>
+        <span class="option-meta">${escapeHtml(flightWhen(flight))}</span>
+      </span>
+      <span class="option-price">${price ?? "—"}</span>
+    </div>`;
+}
+
+// Cheapest and fastest are picked here rather than server-side so both rows
+// come from the one option list the itinerary already carries.
+function renderFlightTable(label, options) {
+  if (!options || !options.length) return "";
+
+  const route = options[0].origin && options[0].destination
+    ? ` — ${escapeHtml(options[0].origin)} → ${escapeHtml(options[0].destination)}`
+    : "";
+  const byPrice = [...options].sort((a, b) => (a.total ?? Infinity) - (b.total ?? Infinity));
+  const byDuration = [...options]
+    // A missing duration would otherwise sort to the front and be presented
+    // as the fastest flight available.
+    .filter((f) => f.duration_hours !== null && f.duration_hours !== undefined)
+    .sort((a, b) => a.duration_hours - b.duration_hours);
+
+  const row = (title, list) =>
+    list.length
+      ? `<tr>
+           <th scope="row">${title}</th>
+           <td colspan="2">${list.slice(0, OPTIONS_PER_ROW).map(renderFlightOption).join("")}</td>
+         </tr>`
+      : "";
+
+  return `
+    <div class="card">
+      <h3>${escapeHtml(label)}${route}</h3>
+      <table class="flight-table">
+        <thead>
+          <tr><th></th><th>Flight</th><th class="price-col">Price</th></tr>
+        </thead>
+        <tbody>
+          ${row("Cheapest", byPrice)}
+          ${row("Fastest", byDuration)}
+        </tbody>
+      </table>
+    </div>`;
+}
+
 function renderHotelItem(hotel, isSelected) {
   const bits = [];
   if (hotel.tier) bits.push(escapeHtml(hotel.tier));
@@ -141,14 +216,12 @@ function renderHotelItem(hotel, isSelected) {
 }
 
 function renderActivity(activity) {
-  const cost = money(activity.estimated_cost);
   const where = activity.location ? ` @ ${escapeHtml(activity.location)}` : "";
   return `
     <div class="activity">
       <div class="activity-row">
         <span class="activity-time">${escapeHtml(activity.time)}</span>
         <span class="activity-title">${escapeHtml(activity.title)}${where}</span>
-        <span class="activity-cost">${cost ? `~${cost}` : ""}</span>
       </div>
       ${activity.description ? `<p class="activity-description">${escapeHtml(activity.description)}</p>` : ""}
     </div>`;
@@ -186,6 +259,9 @@ function renderTrip(trip) {
       ${renderFlightRow("Return", it.return_flight)}
     </div>
 
+    ${renderFlightTable("Outbound options", it.outbound_options)}
+    ${renderFlightTable("Return options", it.return_options)}
+
     ${
       it.lodging_options.length
         ? `<div class="card">
@@ -201,14 +277,5 @@ function renderTrip(trip) {
       <h3>Day by day</h3>
       ${it.days.map(renderDay).join("")}
     </div>
-
-    ${
-      it.notes.length
-        ? `<div class="card notes">
-            <h3>Notes</h3>
-            <ul>${it.notes.map((n) => `<li>${escapeHtml(n)}</li>`).join("")}</ul>
-          </div>`
-        : ""
-    }
   `;
 }

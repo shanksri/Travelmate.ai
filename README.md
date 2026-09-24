@@ -224,12 +224,42 @@ renders `₹2,30,610` (with Indian digit grouping, via `en-IN`). See
 ## Travel data
 
 `TRAVELMATE_PROVIDER=mock` (the default) serves deterministic, seeded travel
-data — plausible fiction, not quotes — standing in for AviationStack, Google
-Places/Maps, and Tavily Search alike, so the whole system runs end to end with
-no third-party keys and the tests never touch a network. Real integrations
-implement the `TravelProvider` Protocol in `app/providers/base.py` and get
-wired into `get_provider()`; `provider="live"` raises until one exists, so it
-can never quietly serve invented prices as real ones.
+data — plausible fiction, not quotes — so the whole system runs end to end with
+no third-party keys and the tests never touch a network.
+
+`TRAVELMATE_PROVIDER=live` serves **real flight fares** from Travelpayouts
+(Aviasales), and mock data for everything else — lodging, attractions and
+weather still have no real source. Needs `TRAVELPAYOUTS_API_KEY`: the
+32-character hex token from the Aviasales program's own API section, not the
+longer `travelpayouts-…` token from the general partner-tools page (that one
+gets `401` on every fare endpoint).
+
+### Real flight fares (`TRAVELMATE_PROVIDER=live`)
+
+`app/providers/travelpayouts.py` uses `/aviasales/v3/prices_for_dates`, which
+returns the operating airline, flight number, departure time, per-leg
+duration, stops and price in rupees. Place names resolve to IATA codes through
+Travelpayouts' own city directory ("Delhi" → New Delhi's `DEL`, preferring a
+flightable airport).
+
+Each leg is searched **one day either side of the travel date**
+(`DATE_WINDOW_DAYS`), and every option found is kept on the itinerary
+(`outbound_options` / `return_options`). The frontend shows one table per leg,
+each with a **Cheapest** and a **Fastest** row of up to three flights, each
+flight showing its duration, stops, date and local departure time next to its
+price. The flight actually booked and costed is the cheapest one on the travel
+date itself — a cheaper flight the day before is shown, not booked — and only
+falls back to another day when nothing departs on the date.
+
+Limits of this data, measured against the live API:
+
+- **Cached, not live** — indicative prices, not bookable quotes.
+- **Sparse** — roughly one fare per route per day. A ±1-day search around
+  10 Oct on Delhi→Mumbai, one of India's busiest routes, found a single
+  flight. Widening `DATE_WINDOW_DAYS` is a one-line change.
+- If a route has no cached fares, the trip plans **without flights** rather
+  than falling back to mock ones, which would be indistinguishable from real
+  fares on the page.
 
 ### Real fetch clients (built, tested, not wired into the pipeline yet)
 
@@ -540,6 +570,19 @@ each one is easy to reintroduce by accident:
   `app/providers/tavily_mcp.py`'s calls. Worth checking what HTTP library a
   new dependency actually uses before assuming an existing network-block
   fixture covers it.
+- **Don't ask an agent to predict a choice that code makes.** The flight agent
+  was told "the cheapest option is booked" and asked to explain it; once
+  booking started preferring the travel date, it kept naming the cheaper
+  flight a day early as "chosen" — even after its prompt was reworded to
+  describe the new rule. Fixed by computing the booked flight *before* the LLM
+  call (`_booked_option` in `app/agent/nodes.py`) and handing it over as
+  `booked_outbound` / `booked_return`. Same shape as the earlier hotel-summary
+  bug: an agent's text should describe decisions, never anticipate them.
+- **A fare API can ignore your dates without telling you.** Travelpayouts'
+  `/v2/prices/latest` returns the cheapest fares found across a *year*: a trip
+  for 10–13 October got an outbound on 5 October and a return on 29 September.
+  Mock data hid it, because it stamps whatever date you pass in. Replaced with
+  `/aviasales/v3/prices_for_dates`, which takes an exact date.
 - **SQLAlchemy's `create_all()` creates missing *tables*, never missing
   *columns*.** Adding `thread_id`/`version` to the `trips` table meant a
   database created before versioning existed would keep its old three columns
@@ -566,10 +609,10 @@ each one is easy to reintroduce by accident:
 ## Status
 
 The agent graph, nodes, validation, Postgres persistence, the frontend, the
-API, and tests are all real and working. Travel data is still mocked; real
-fetch clients for AviationStack and Tavily exist and are tested but not wired
-into the pipeline (see "Real fetch clients" above) — that's the next step,
-alongside deciding on a train-data source.
+API, and tests are all real and working. Flight fares are real under
+`TRAVELMATE_PROVIDER=live` (Travelpayouts); lodging, attractions and weather
+are still mock data. The AviationStack, Tavily and Open-Meteo clients exist and
+are tested but aren't used by the planner.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the original diagram this was built
 from and what's implemented vs. deferred, and

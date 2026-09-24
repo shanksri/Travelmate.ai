@@ -37,3 +37,39 @@ def test_lodging_is_sorted_by_total_cost(provider):
 def test_attraction_limit_is_clamped(provider):
     assert len(provider.search_attractions("Rome, Italy", ["food"], limit=3)) == 3
     assert len(provider.search_attractions("Rome, Italy", ["food"], limit=99)) <= 10
+
+
+# --- LiveTravelProvider ------------------------------------------------------
+
+
+def test_live_provider_serves_real_flights(monkeypatch):
+    from app.providers.live import LiveTravelProvider
+
+    real = [{"carrier": "IX", "total": 6899.0}]
+    monkeypatch.setattr("app.providers.live.search_real_flights", lambda *a, **k: real)
+
+    assert LiveTravelProvider().search_flights("Delhi", "Mumbai", date(2026, 10, 10), 1) == real
+
+
+def test_live_provider_returns_no_flights_rather_than_mock_ones_on_failure(monkeypatch):
+    """Invented flights shown alongside real ones would be indistinguishable
+    from them, so an API failure means no flights, not fictional ones."""
+    from app.providers.live import LiveTravelProvider
+    from app.providers.travelpayouts import TravelPayoutsError
+
+    def boom(*args, **kwargs):
+        raise TravelPayoutsError("401 Unauthorized")
+
+    monkeypatch.setattr("app.providers.live.search_real_flights", boom)
+
+    assert LiveTravelProvider().search_flights("Delhi", "Mumbai", date(2026, 10, 10), 1) == []
+
+
+def test_live_provider_keeps_mock_data_for_everything_but_flights():
+    from app.providers.live import LiveTravelProvider
+
+    live, mock = LiveTravelProvider(), MockTravelProvider()
+
+    assert live.search_lodging("Lisbon", date(2026, 4, 10), 3, 2) == mock.search_lodging(
+        "Lisbon", date(2026, 4, 10), 3, 2
+    )

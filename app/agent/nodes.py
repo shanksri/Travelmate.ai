@@ -7,6 +7,7 @@ the same compiled graph for every request.
 """
 
 import json
+from datetime import date
 
 from app.agent.itinerary_json import ItineraryValidationError, parse_itinerary
 from app.agent.llm import LLM
@@ -104,8 +105,12 @@ def build_flight_node(provider: TravelProvider, llm: LLM):
             system=FLIGHT_AGENT_SYSTEM,
             user=json.dumps(
                 {
+                    "outbound_date": request.start_date,
+                    "return_date": request.end_date,
                     "party_size": request.travelers,
                     "budget": request.budget,
+                    "booked_outbound": _booked_option(outbound, request.start_date),
+                    "booked_return": _booked_option(return_leg, request.end_date),
                     "outbound_options": outbound,
                     "return_options": return_leg,
                 },
@@ -156,17 +161,38 @@ def build_hotel_node(provider: TravelProvider, llm: LLM):
     return node
 
 
-def _cheapest_flight(options: list[dict], rationale: str) -> FlightLeg | None:
-    """The provider already sorts by total ascending — see mock.py — so
-    the first option is the cheapest, for either provider's real equivalent
-    too as long as it honours the same contract."""
+def _booked_option(options: list[dict], on: date) -> dict | None:
+    """The cheapest option departing on the trip's own date, or — only if
+    there's none — the cheapest in the whole search window.
+
+    Providers sort by total ascending (see mock.py), so the first match is the
+    cheapest. The date preference matters because a live search covers a day
+    either side of the travel date: without it, a flight a day early would be
+    booked just for being ₹100 cheaper.
+
+    Used by both the flight node (to tell the flight agent what *is* booked,
+    rather than asking it to predict) and the itinerary node (to book it), so
+    the explanation and the booking can't disagree.
+    """
     if not options:
         return None
-    return FlightLeg(**options[0], rationale=rationale)
+    same_day = [o for o in options if str(o.get("depart_date")) == on.isoformat()]
+    return (same_day or options)[0]
+
+
+def _booked_flight(options: list[dict], rationale: str, on: date) -> FlightLeg | None:
+    option = _booked_option(options, on)
+    return FlightLeg(**option, rationale=rationale) if option else None
 
 
 def _lodging_options(options: list[dict]) -> list[LodgingOption]:
     return [LodgingOption(**option) for option in options]
+
+
+def _flight_options(options: list[dict]) -> list[FlightLeg]:
+    """Every option the search returned, for the cheapest-vs-fastest table —
+    not just the one that gets booked."""
+    return [FlightLeg(**option) for option in options]
 
 
 def build_itinerary_node(provider: TravelProvider, llm: LLM, max_retries: int):
@@ -180,11 +206,12 @@ def build_itinerary_node(provider: TravelProvider, llm: LLM, max_retries: int):
         # Itinerary is assembled — so the numbers shown to the traveller and
         # the numbers the itinerary agent budgets against are the same ones.
         flight_results = state["flight_results"]
-        outbound_flight = _cheapest_flight(
-            flight_results.get("outbound_options", []), flight_results.get("recommendation", "")
+        rationale = flight_results.get("recommendation", "")
+        outbound_flight = _booked_flight(
+            flight_results.get("outbound_options", []), rationale, on=request.start_date
         )
-        return_flight = _cheapest_flight(
-            flight_results.get("return_options", []), flight_results.get("recommendation", "")
+        return_flight = _booked_flight(
+            flight_results.get("return_options", []), rationale, on=request.end_date
         )
         lodging = _lodging_options(state["hotel_results"].get("options", []))
 
@@ -193,12 +220,15 @@ def build_itinerary_node(provider: TravelProvider, llm: LLM, max_retries: int):
         )
         hotel_cost = lodging[0].total or 0 if lodging else 0
 
-        flight_note = (
-            "No origin was given, so no flight is included in the cost below."
-            if outbound_flight is None
-            else f"Outbound + return flight already booked: Rs {flight_cost:,.0f} total. "
-            "Do not plan or re-cost the flight yourself."
-        )
+        if not request.origin:
+            flight_note = "No origin was given, so no flight is included in the cost below."
+        elif outbound_flight is None and return_flight is None:
+            flight_note = "No flight fares were found, so no flight is included in the cost below."
+        else:
+            flight_note = (
+                f"Flights already booked: Rs {flight_cost:,.0f} total. "
+                "Do not plan or re-cost the flight yourself."
+            )
         hotel_note = (
             f"Hotel already booked: {lodging[0].name}, Rs {hotel_cost:,.0f} total. "
             "Do not plan or re-cost lodging yourself."
@@ -256,6 +286,8 @@ def build_itinerary_node(provider: TravelProvider, llm: LLM, max_retries: int):
                 travelers=request.travelers,
                 outbound_flight=outbound_flight,
                 return_flight=return_flight,
+                outbound_options=_flight_options(flight_results.get("outbound_options", [])),
+                return_options=_flight_options(flight_results.get("return_options", [])),
                 lodging_options=lodging,
                 days=draft.days,
                 total_estimated_cost=flight_cost + hotel_cost + activity_cost,

@@ -12,7 +12,7 @@ the amounts are left exactly as they were, because an old trip really was
 priced in dollars and relabelling it rupees would be a lie.
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -111,6 +111,10 @@ class FlightLeg(BaseModel):
     origin: str
     destination: str
     depart_date: date
+    departure_at: datetime | None = Field(
+        default=None,
+        description="Local departure time, when the source knows it. Mock data doesn't.",
+    )
     stops: int = 0
     duration_hours: float | None = None
     price_per_person: float | None = Field(default=None, ge=0)
@@ -162,6 +166,11 @@ class Itinerary(BaseModel):
     travelers: int
     outbound_flight: FlightLeg | None = None
     return_flight: FlightLeg | None = None
+    # Every option the search returned for each leg, cheapest first — what the
+    # cheapest-vs-fastest comparison is built from. `outbound_flight` /
+    # `return_flight` above remain the one actually selected and costed.
+    outbound_options: list[FlightLeg] = Field(default_factory=list)
+    return_options: list[FlightLeg] = Field(default_factory=list)
     lodging_options: list[LodgingOption] = Field(default_factory=list)
     days: list[DayPlan]
     currency: str = DEFAULT_CURRENCY

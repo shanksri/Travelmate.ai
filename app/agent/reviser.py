@@ -113,6 +113,8 @@ def revise_trip(
             travelers=itinerary.travelers,
             outbound_flight=itinerary.outbound_flight,
             return_flight=itinerary.return_flight,
+            outbound_options=itinerary.outbound_options,
+            return_options=itinerary.return_options,
             lodging_options=itinerary.lodging_options,
             days=draft.days,
             currency=itinerary.currency,

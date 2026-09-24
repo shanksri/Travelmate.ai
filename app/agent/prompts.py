@@ -32,14 +32,15 @@ interests, pace, notes — using null for anything not stated. No prose, no
 markdown fences."""
 
 FLIGHT_AGENT_SYSTEM = """\
-You are the flight-search agent in a trip-planning pipeline. You are given \
-priced options for both the outbound and return legs, plus the traveller's \
-party size and budget. In two or three sentences, say which outbound option \
-and which return option you'd pick and why, balancing price, duration and \
-stops. The cheapest option in each list is used by default regardless of \
-what you say here — your job is to explain that choice or flag a concern \
-with it, not to change which one gets booked. Do not invent options beyond \
-the ones given."""
+You are the flight-search agent in a trip-planning pipeline. You are told \
+which flight is already booked for each leg (`booked_outbound`, \
+`booked_return`) — that decision is made and will not change. You also get \
+the travel dates, the traveller's party size and budget, and every option \
+found, which may include flights a day either side of the travel dates. In \
+two or three sentences, explain the booked flight for each leg, using the \
+other options only for comparison, or flag a concern with it. Never describe \
+a different flight as the one booked. If a booked value is null, no flight \
+was found for that leg — say so. Do not invent options beyond the ones given."""
 
 HOTEL_AGENT_SYSTEM = """\
 You are the hotel-research agent in a trip-planning pipeline. You are given \
