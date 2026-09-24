@@ -227,43 +227,42 @@ renders `₹2,30,610` (with Indian digit grouping, via `en-IN`). See
 data — plausible fiction, not quotes — so the whole system runs end to end with
 no third-party keys and the tests never touch a network.
 
-`TRAVELMATE_PROVIDER=live` serves **real flight fares** from Travelpayouts
-(Aviasales), and mock data for everything else — lodging, attractions and
-weather still have no real source. Needs `TRAVELPAYOUTS_API_KEY`: the
-32-character hex token from the Aviasales program's own API section, not the
-longer `travelpayouts-…` token from the general partner-tools page (that one
-gets `401` on every fare endpoint).
+`TRAVELMATE_PROVIDER=live` serves **live flight fares from Google Flights**,
+via SerpApi's hosted MCP server, and mock data for everything else — lodging,
+attractions and weather still have no real source. Needs `SERPAPI_API_KEY`.
 
-### Real flight fares (`TRAVELMATE_PROVIDER=live`)
+### Live flight fares (`TRAVELMATE_PROVIDER=live`)
 
-`app/providers/travelpayouts.py` uses `/aviasales/v3/prices_for_dates`, which
-returns the operating airline, flight number, departure time, per-leg
-duration, stops and price in rupees. Place names resolve to IATA codes through
-Travelpayouts' own city directory ("Delhi" → New Delhi's `DEL`, preferring a
-flightable airport). A shared name resolves to the match in the same country
-as the other end of the route — there's a flightable Kochi in both Japan
-(`KCZ`) and India (`COK`), and Japan's comes first in the directory.
+`app/providers/google_flights.py` is an **MCP client** to SerpApi's official
+hosted server (`https://mcp.serpapi.com/mcp`, streamable HTTP). It calls the
+server's `search` tool with `engine=google_flights` — a one-way, one-adult,
+rupee-priced search for each leg on the exact travel date. The key goes in an
+`Authorization: Bearer` header rather than the URL path SerpApi also accepts,
+because the MCP SDK logs every request URL.
 
-Each leg is searched **one day either side of the travel date**
-(`DATE_WINDOW_DAYS`), and every option found is kept on the itinerary
-(`outbound_options` / `return_options`). The frontend shows one table per leg,
-each with a **Cheapest** and a **Fastest** row of up to three flights, each
-flight showing its duration, stops, date and local departure time next to its
-price. The flight actually booked and costed is the cheapest one on the travel
-date itself — a cheaper flight the day before is shown, not booked — and only
-falls back to another day when nothing departs on the date.
+Each result carries price, total duration, every segment's airline and flight
+number, and departure time. Place names resolve through
+`app/providers/iata.py`, which uses Travelpayouts' free public city and airport
+directories (no account needed): "Delhi" → `DEL`; a shared name like Kochi
+(Japan's `KCZ` vs India's `COK`) resolves to the match in the same country as
+the other end of the route; and a multi-airport city expands to its airports,
+since Google Flights wants airport codes (Tokyo `TYO` → `NRT,HND`).
 
-Limits of this data, measured against the live API:
+Every option is kept on the itinerary (`outbound_options` / `return_options`).
+The frontend shows one table per leg, each with a **Cheapest** and a
+**Fastest** row of up to three flights, each showing duration, stops, date and
+local departure time next to its price. The flight booked and costed is the
+cheapest on the travel date.
 
-- **Cached, not live** — indicative prices, not bookable quotes.
-- **Sparse** — roughly one fare per route per day on a busy route, and far
-  less on a quieter one. A ±1-day search around 10 Oct on Delhi→Mumbai found
-  a single flight; Varanasi→Cochin had **two fares in all of October**, none
-  within five days of 8 Oct, while Cleartrip showed ₹8k that day. When the
-  cache does have a fare, the price is in line (₹9,157 on 3 Oct). Widening
-  `DATE_WINDOW_DAYS` is a one-line change, but only a live search fixes the
-  coverage itself.
-- If a route has no cached fares, the trip plans **without flights** rather
+Measured: Varanasi→Cochin on 8 Oct returned **9 outbound and 5 return
+flights** on the exact dates, cheapest ₹9,131 (Cleartrip showed ~₹8k).
+
+Limits:
+
+- **100 searches/month** on SerpApi's free plan, and every trip spends two.
+  Tests never touch it — they mock the MCP round trip.
+- Google occasionally lists a flight with no price; those are skipped.
+- If a search finds nothing or fails, the trip plans **without flights** rather
   than falling back to mock ones, which would be indistinguishable from real
   fares on the page.
 
@@ -587,8 +586,10 @@ each one is easy to reintroduce by accident:
 - **A fare API can ignore your dates without telling you.** Travelpayouts'
   `/v2/prices/latest` returns the cheapest fares found across a *year*: a trip
   for 10–13 October got an outbound on 5 October and a return on 29 September.
-  Mock data hid it, because it stamps whatever date you pass in. Replaced with
-  `/aviasales/v3/prices_for_dates`, which takes an exact date.
+  Mock data hid it, because it stamps whatever date you pass in. (Travelpayouts
+  was later dropped entirely: even its exact-date endpoint had too few cached
+  fares — two for Varanasi→Cochin in all of October. A cached-fare API can't
+  stand in for a live search on quieter routes.)
 - **SQLAlchemy's `create_all()` creates missing *tables*, never missing
   *columns*.** Adding `thread_id`/`version` to the `trips` table meant a
   database created before versioning existed would keep its old three columns
@@ -616,7 +617,7 @@ each one is easy to reintroduce by accident:
 
 The agent graph, nodes, validation, Postgres persistence, the frontend, the
 API, and tests are all real and working. Flight fares are real under
-`TRAVELMATE_PROVIDER=live` (Travelpayouts); lodging, attractions and weather
+`TRAVELMATE_PROVIDER=live` (Google Flights via SerpApi's MCP server); lodging, attractions and weather
 are still mock data. The AviationStack, Tavily and Open-Meteo clients exist and
 are tested but aren't used by the planner.
 

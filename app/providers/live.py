@@ -1,24 +1,25 @@
 """The "live" provider: real flights, mock everything else.
 
-Only flights have a real data source in this project so far — Travelpayouts
-returns actual fares (see `app/providers/travelpayouts.py`). Lodging,
-attractions, destinations and weather are still the deterministic mock data,
-so this subclasses `MockTravelProvider` and overrides exactly one method
-rather than pretending the rest is real.
+Only flights have a real data source in this project so far — live Google
+Flights results via SerpApi's MCP server (see
+`app/providers/google_flights.py`). Lodging, attractions, destinations and
+weather are still the deterministic mock data, so this subclasses
+`MockTravelProvider` and overrides exactly one method rather than pretending
+the rest is real.
 
-When a route has no cached fares, or the API fails, this returns no flights
-rather than falling back to mock ones: invented flights shown alongside real
-ones would be indistinguishable from them. A trip without flights still
-plans, exactly as it does when no origin was given.
+When a search finds nothing, or fails, this returns no flights rather than
+falling back to mock ones: invented flights shown alongside real ones would
+be indistinguishable from them. A trip without flights still plans, exactly
+as it does when no origin was given.
 """
 
 import logging
 from datetime import date
 from typing import Any
 
+from app.providers.google_flights import GoogleFlightsError
+from app.providers.google_flights import search_flights as search_real_flights
 from app.providers.mock import MockTravelProvider
-from app.providers.travelpayouts import TravelPayoutsError
-from app.providers.travelpayouts import search_flights as search_real_flights
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +30,10 @@ class LiveTravelProvider(MockTravelProvider):
     ) -> list[dict[str, Any]]:
         try:
             flights = search_real_flights(origin, destination, depart, travelers)
-        except TravelPayoutsError as exc:
-            logger.warning("travelpayouts lookup failed for %s -> %s: %s", origin, destination, exc)
+        except GoogleFlightsError as exc:
+            logger.warning("flight search failed for %s -> %s: %s", origin, destination, exc)
             return []
 
         if not flights:
-            logger.info("no cached fares for %s -> %s around %s", origin, destination, depart)
+            logger.info("no flights found for %s -> %s on %s", origin, destination, depart)
         return flights

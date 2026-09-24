@@ -54,11 +54,11 @@ def test_live_provider_serves_real_flights(monkeypatch):
 def test_live_provider_returns_no_flights_rather_than_mock_ones_on_failure(monkeypatch):
     """Invented flights shown alongside real ones would be indistinguishable
     from them, so an API failure means no flights, not fictional ones."""
+    from app.providers.google_flights import GoogleFlightsError
     from app.providers.live import LiveTravelProvider
-    from app.providers.travelpayouts import TravelPayoutsError
 
     def boom(*args, **kwargs):
-        raise TravelPayoutsError("401 Unauthorized")
+        raise GoogleFlightsError("SERPAPI_API_KEY is not set")
 
     monkeypatch.setattr("app.providers.live.search_real_flights", boom)
 
