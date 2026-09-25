@@ -2,6 +2,7 @@
 
 import logging
 import uuid
+from datetime import date
 
 import openai
 
@@ -70,6 +71,8 @@ def plan_trip_from_prompt(
     *,
     include_flights: bool = True,
     include_hotels: bool = True,
+    start_date: date | None = None,
+    end_date: date | None = None,
     llm: LLM | None = None,
     provider: TravelProvider | None = None,
     settings: Settings | None = None,
@@ -79,15 +82,22 @@ def plan_trip_from_prompt(
     parsing step and the whole planning graph.
 
     `include_flights` / `include_hotels` come from the frontend's checkboxes,
-    not from the sentence, so they're applied after parsing rather than left
-    for the model to infer.
+    and `start_date` / `end_date` from its calendar pickers, not from the
+    sentence, so they're applied after parsing rather than left for the model
+    to infer. Picked dates replace any the sentence implied.
     """
+    if (start_date is None) != (end_date is None):
+        raise ValueError("give both start_date and end_date, or neither")
+
     settings = settings or get_settings()
     llm = llm or _build_llm(settings)
 
-    request = parse_trip_prompt(prompt, llm).model_copy(
-        update={"include_flights": include_flights, "include_hotels": include_hotels}
-    )
+    overrides: dict = {"include_flights": include_flights, "include_hotels": include_hotels}
+    if start_date and end_date:
+        overrides |= {"start_date": start_date, "end_date": end_date}
+    # Re-validated rather than model_copy'd, so picked dates go through the
+    # same ordering and length checks as parsed ones.
+    request = TripRequest.model_validate(parse_trip_prompt(prompt, llm).model_dump() | overrides)
     # Without this, a missing destination falls through to resolve_destination,
     # which picks from the provider's sample list — "Varanasi to Kerala and
     # Tamil Nadu" came back as five days in Chiang Mai. Asking is better than

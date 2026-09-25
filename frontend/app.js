@@ -8,6 +8,8 @@ const statusText = document.getElementById("status-text");
 const chipsEl = document.getElementById("chips");
 const includeFlights = document.getElementById("include-flights");
 const includeHotels = document.getElementById("include-hotels");
+const startDateInput = document.getElementById("start-date");
+const endDateInput = document.getElementById("end-date");
 const reviseCard = document.getElementById("revise-card");
 const reviseForm = document.getElementById("revise-form");
 const reviseInput = document.getElementById("revise-input");
@@ -18,6 +20,51 @@ const reviseButton = document.getElementById("revise-button");
 let currentThreadId = null;
 
 checkOnlineStatus();
+
+// Same limit as the backend's MAX_TRIP_NIGHTS.
+const MAX_TRIP_NIGHTS = 60;
+
+// yyyy-mm-dd in the viewer's own timezone — toISOString() would give the UTC
+// date, which is yesterday for anyone in India before 05:30.
+function isoDate(d) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function addDays(iso, days) {
+  const d = new Date(`${iso}T00:00:00`);
+  d.setDate(d.getDate() + days);
+  return isoDate(d);
+}
+
+// Keep the calendars from offering impossible picks: nothing in the past, no
+// end before the start, nothing past the longest trip allowed.
+function updateDateLimits() {
+  const today = isoDate(new Date());
+  startDateInput.min = today;
+  const start = startDateInput.value;
+  endDateInput.min = start || today;
+  endDateInput.max = start ? addDays(start, MAX_TRIP_NIGHTS) : "";
+  if (start && endDateInput.value && (endDateInput.value < endDateInput.min || endDateInput.value > endDateInput.max)) {
+    endDateInput.value = "";
+  }
+}
+
+updateDateLimits();
+startDateInput.addEventListener("change", updateDateLimits);
+
+// Returns {start_date, end_date} (both null when neither is picked), or
+// throws with a message for the status line.
+function pickedDates() {
+  const start = startDateInput.value;
+  const end = endDateInput.value;
+  if (!start && !end) return { start_date: null, end_date: null };
+  if (!start || !end) throw new Error("Pick both a start and an end date, or leave both empty.");
+  if (start < isoDate(new Date())) throw new Error("The start date is in the past.");
+  if (end < start) throw new Error("The end date is before the start date.");
+  if (end > addDays(start, MAX_TRIP_NIGHTS)) throw new Error("Trips longer than 60 days aren't supported.");
+  return { start_date: start, end_date: end };
+}
 
 chipsEl.addEventListener("click", (event) => {
   const chip = event.target.closest(".chip");
@@ -31,6 +78,14 @@ form.addEventListener("submit", async (event) => {
 
   const prompt = promptInput.value.trim();
   if (!prompt) return;
+
+  let dates;
+  try {
+    dates = pickedDates();
+  } catch (err) {
+    setStatus("error", err.message);
+    return;
+  }
 
   resultEl.hidden = true;
   reviseCard.hidden = true;
@@ -48,6 +103,7 @@ form.addEventListener("submit", async (event) => {
         prompt,
         include_flights: includeFlights.checked,
         include_hotels: includeHotels.checked,
+        ...dates,
       }),
     });
     const data = await response.json();

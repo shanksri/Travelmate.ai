@@ -89,6 +89,8 @@ def create_plan_from_prompt(payload: PlanFromPromptRequest) -> PlanTripResponse:
                 payload.prompt,
                 include_flights=payload.include_flights,
                 include_hotels=payload.include_hotels,
+                start_date=payload.start_date,
+                end_date=payload.end_date,
             )
         )
     except PromptParseError as exc:

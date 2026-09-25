@@ -93,6 +93,13 @@ didn't ask for it, so it doesn't improvise a hotel into the plan. Both default
 to `true` on the API and `TripRequest`, so `POST /trips/plan`, the CLI and
 already-stored trips behave as before.
 
+**Dates can be picked on a calendar.** Optional Start and End pickers next to
+the checkboxes send `start_date` / `end_date` with the prompt. When both are
+given they replace any dates the sentence implied; when neither is, the
+sentence and the defaults above decide. The API refuses half a pair, an end
+before the start, a start in the past, and trips over 60 nights. The pickers
+won't offer those dates in the first place.
+
 ## Quick start
 
 ```bash

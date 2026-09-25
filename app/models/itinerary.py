@@ -24,6 +24,9 @@ Pace = Literal["relaxed", "balanced", "packed"]
 
 DEFAULT_CURRENCY = "INR"
 
+# The longest trip accepted, counted in nights (end_date - start_date).
+MAX_TRIP_NIGHTS = 60
+
 
 def _rename_legacy_usd_fields(data: object, renames: dict[str, str]) -> object:
     """Map pre-INR `*_usd` keys onto their currency-neutral replacements.
@@ -71,7 +74,7 @@ class TripRequest(BaseModel):
     def _dates_are_ordered(self) -> "TripRequest":
         if self.end_date < self.start_date:
             raise ValueError("end_date must not be before start_date")
-        if (self.end_date - self.start_date).days > 60:
+        if (self.end_date - self.start_date).days > MAX_TRIP_NIGHTS:
             raise ValueError("trips longer than 60 days are not supported")
         return self
 

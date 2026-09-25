@@ -93,6 +93,78 @@ def test_a_prompt_with_no_destination_is_refused_before_planning(provider, setti
     assert [c["system"] for c in llm.calls] == [PARSE_REQUEST_SYSTEM]
 
 
+def _capture_planned_request(monkeypatch) -> dict:
+    """Stops plan_trip_from_prompt at the graph and records the request it
+    would have planned."""
+    from app.agent import planner
+
+    seen = {}
+
+    def fake_plan_trip(request, **kwargs):
+        seen["request"] = request
+        return "planned"
+
+    monkeypatch.setattr(planner, "plan_trip", fake_plan_trip)
+    return seen
+
+
+def _parse_llm(**fields) -> FakeLLM:
+    import json
+
+    from app.agent.prompts import PARSE_REQUEST_SYSTEM
+
+    payload = {"destination": "Goa", "origin": "Pune"} | fields
+    return FakeLLM(by_system={PARSE_REQUEST_SYSTEM: [json.dumps(payload)]})
+
+
+def test_picked_dates_replace_the_ones_in_the_sentence(monkeypatch, provider, settings):
+    from datetime import date
+
+    from app.agent.planner import plan_trip_from_prompt
+
+    seen = _capture_planned_request(monkeypatch)
+    llm = _parse_llm(start_date="2026-12-01", end_date="2026-12-07")
+
+    plan_trip_from_prompt(
+        "Goa from Pune, 1 to 7 December",
+        start_date=date(2027, 1, 10),
+        end_date=date(2027, 1, 13),
+        llm=llm,
+        provider=provider,
+        settings=settings,
+    )
+
+    assert seen["request"].start_date == date(2027, 1, 10)
+    assert seen["request"].end_date == date(2027, 1, 13)
+    assert seen["request"].destination == "Goa"  # everything else still parsed
+
+
+def test_without_picked_dates_the_sentence_decides(monkeypatch, provider, settings):
+    from datetime import date
+
+    from app.agent.planner import plan_trip_from_prompt
+
+    seen = _capture_planned_request(monkeypatch)
+    llm = _parse_llm(start_date="2026-12-01", end_date="2026-12-07")
+
+    plan_trip_from_prompt("Goa, 1 to 7 December", llm=llm, provider=provider, settings=settings)
+
+    assert seen["request"].start_date == date(2026, 12, 1)
+    assert seen["request"].end_date == date(2026, 12, 7)
+
+
+def test_half_a_date_pair_is_refused(provider, settings):
+    from datetime import date
+
+    from app.agent.planner import plan_trip_from_prompt
+
+    with pytest.raises(ValueError, match="both start_date and end_date"):
+        plan_trip_from_prompt(
+            "Goa", start_date=date(2027, 1, 10), llm=_parse_llm(), provider=provider,
+            settings=settings,
+        )
+
+
 def test_plan_trip_raises_when_the_itinerary_agent_never_recovers(
     provider, trip_request, settings
 ):

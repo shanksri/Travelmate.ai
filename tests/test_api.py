@@ -128,7 +128,8 @@ def test_plan_from_prompt_passes_the_checkboxes_through(client, trip_request, mo
         json={"prompt": "Goa for 3 days", "include_flights": True, "include_hotels": False},
     )
 
-    assert seen == {"include_flights": True, "include_hotels": False}
+    assert seen["include_flights"] is True
+    assert seen["include_hotels"] is False
 
 
 def test_plan_from_prompt_includes_both_when_a_caller_does_not_say(
@@ -145,12 +146,83 @@ def test_plan_from_prompt_includes_both_when_a_caller_does_not_say(
 
     client.post("/trips/plan-from-prompt", json={"prompt": "Goa for 3 days"})
 
-    assert seen == {"include_flights": True, "include_hotels": True}
+    assert seen == {
+        "include_flights": True,
+        "include_hotels": True,
+        "start_date": None,
+        "end_date": None,
+    }
 
 
 def test_plan_from_prompt_rejects_an_empty_prompt(client):
     response = client.post("/trips/plan-from-prompt", json={"prompt": ""})
     assert response.status_code == 422
+
+
+# --- calendar dates ----------------------------------------------------------
+
+
+def _in_days(n: int) -> str:
+    return date.fromordinal(date.today().toordinal() + n).isoformat()
+
+
+def test_plan_from_prompt_passes_picked_dates_through(client, trip_request, monkeypatch):
+    seen = {}
+
+    def fake(prompt, **kwargs):
+        seen.update(kwargs)
+        return sample_planned_trip(trip_request)
+
+    monkeypatch.setattr("app.api.routes.trips.plan_trip_from_prompt", fake)
+
+    client.post(
+        "/trips/plan-from-prompt",
+        json={"prompt": "Goa", "start_date": _in_days(10), "end_date": _in_days(14)},
+    )
+
+    assert seen["start_date"] == date.fromisoformat(_in_days(10))
+    assert seen["end_date"] == date.fromisoformat(_in_days(14))
+
+
+@pytest.mark.parametrize(
+    "dates",
+    [
+        {"start_date": _in_days(10)},  # only one of the pair
+        {"end_date": _in_days(10)},
+        {"start_date": _in_days(10), "end_date": _in_days(9)},  # end before start
+        {"start_date": _in_days(-1), "end_date": _in_days(3)},  # starts in the past
+        {"start_date": _in_days(1), "end_date": _in_days(62)},  # 61 nights
+    ],
+)
+def test_plan_from_prompt_rejects_bad_picked_dates(client, monkeypatch, dates):
+    def never_called(*args, **kwargs):
+        raise AssertionError("planning should not start")
+
+    monkeypatch.setattr("app.api.routes.trips.plan_trip_from_prompt", never_called)
+
+    response = client.post("/trips/plan-from-prompt", json={"prompt": "Goa"} | dates)
+
+    assert response.status_code == 422
+
+
+def test_plan_from_prompt_accepts_the_longest_allowed_trip(client, trip_request, monkeypatch):
+    monkeypatch.setattr(
+        "app.api.routes.trips.plan_trip_from_prompt",
+        lambda prompt, **kwargs: sample_planned_trip(trip_request),
+    )
+
+    response = client.post(
+        "/trips/plan-from-prompt",
+        json={"prompt": "Goa", "start_date": _in_days(1), "end_date": _in_days(61)},
+    )
+
+    assert response.status_code == 200
+
+
+def test_the_page_has_the_date_pickers(client):
+    html = client.get("/").text
+    assert 'id="start-date"' in html
+    assert 'id="end-date"' in html
 
 
 # --- revisions and history ---------------------------------------------------
