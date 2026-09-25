@@ -129,3 +129,12 @@ def test_every_parse_call_uses_json_mode():
     parse_trip_prompt("Dubai trip", llm, today=TODAY)
 
     assert llm.calls[0]["json_mode"] is True
+
+
+def test_the_prompt_counts_several_regions_as_one_destination():
+    """gpt-4o-mini read "kerala and tamil nadu" as a note, not a destination,
+    4 times out of 4."""
+    from app.agent.prompts import PARSE_REQUEST_SYSTEM
+
+    assert '"Kerala and Tamil Nadu" is the destination' in PARSE_REQUEST_SYSTEM
+    assert "null only if they named no place" in PARSE_REQUEST_SYSTEM

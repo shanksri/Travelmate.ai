@@ -147,8 +147,10 @@ curl -X POST localhost:8000/trips/plan-from-prompt -H 'content-type: application
 }'
 ```
 
-Leave `destination` out (structured) or unmentioned (free text) and
-`resolve_destination` will pick one and say why. A free-text prompt that
+Leave `destination` out of a structured request and `resolve_destination`
+will pick one from the provider's list and say why. A free-text prompt must
+name a place: one that doesn't is refused with a 422 asking where to go,
+rather than planned somewhere nobody asked for. A free-text prompt that
 leaves out dates gets a default 5-day trip starting two weeks out — see
 `app/agent/prompt_parser.py` for exactly what's inferred versus defaulted.
 

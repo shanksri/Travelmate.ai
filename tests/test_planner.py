@@ -69,6 +69,30 @@ def test_plan_trip_resolves_a_destination_when_none_is_given(provider, settings)
     assert any("coordinator:" in m for m in trip.agent_trace)
 
 
+def test_a_prompt_with_no_destination_is_refused_before_planning(provider, settings):
+    """A free-text request must name a place. Before this, "Varanasi to Kerala
+    and Tamil Nadu" parsed with no destination and was planned as Chiang Mai
+    from the provider's sample list."""
+    import json
+
+    from app.agent.planner import plan_trip_from_prompt
+    from app.agent.prompt_parser import PromptParseError
+    from app.agent.prompts import PARSE_REQUEST_SYSTEM
+
+    parsed = {"destination": None, "origin": "Varanasi", "notes": "Kerala and Tamil Nadu"}
+    llm = FakeLLM(by_system={PARSE_REQUEST_SYSTEM: [json.dumps(parsed)]})
+
+    with pytest.raises(PromptParseError, match="no destination was named"):
+        plan_trip_from_prompt(
+            "give me varanasi to kerala and tamil nadu itenary",
+            llm=llm,
+            provider=provider,
+            settings=settings,
+        )
+
+    assert [c["system"] for c in llm.calls] == [PARSE_REQUEST_SYSTEM]
+
+
 def test_plan_trip_raises_when_the_itinerary_agent_never_recovers(
     provider, trip_request, settings
 ):

@@ -8,7 +8,10 @@ parameters. Extract only what's actually stated or clearly implied; leave \
 anything else null so the system can apply a sensible, documented default —
 do not guess a specific date or number that was never mentioned.
 
-- destination: the place they want to go. null if they want you to suggest one.
+- destination: where they want to go, as they said it. It can be a city, a \
+state, a region or a country, or several of them together — "Kerala and \
+Tamil Nadu" is the destination, not a note. null only if they named no place \
+to go at all.
 - origin: where they are travelling from. null if not mentioned.
 - start_date: an explicit calendar date (YYYY-MM-DD), only if one was given.
 - duration_days: how many days the trip should last, if a length was given \

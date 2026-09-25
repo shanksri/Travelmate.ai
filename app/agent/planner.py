@@ -7,7 +7,7 @@ import openai
 
 from app.agent.graph import build_planner_graph
 from app.agent.llm import LLM, OpenAILLM
-from app.agent.prompt_parser import parse_trip_prompt
+from app.agent.prompt_parser import PromptParseError, parse_trip_prompt
 from app.agent.state import initial_state
 from app.core.config import Settings, get_settings
 from app.models.itinerary import PlannedTrip, TripRequest
@@ -88,4 +88,13 @@ def plan_trip_from_prompt(
     request = parse_trip_prompt(prompt, llm).model_copy(
         update={"include_flights": include_flights, "include_hotels": include_hotels}
     )
+    # Without this, a missing destination falls through to resolve_destination,
+    # which picks from the provider's sample list — "Varanasi to Kerala and
+    # Tamil Nadu" came back as five days in Chiang Mai. Asking is better than
+    # planning a trip nobody requested.
+    if not request.destination:
+        raise PromptParseError(
+            "no destination was named. Say where you want to go — a city, state, "
+            "region or country."
+        )
     return plan_trip(request, llm=llm, provider=provider, settings=settings)
