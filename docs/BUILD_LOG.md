@@ -589,9 +589,21 @@ notes, so nothing seemed to happen.
 | Add Rameshwaram | Applied, but placement varies between runs (after Madurai on one run, just before the Kochi departure on another) | Applied after Madurai, then Kanyakumari, then Kochi |
 | Add 3 days in Ladakh | Agreed: 1–2 days in Leh, once leaving the traveller in Leh on departure day | Declined, with a clear reason |
 
-**Open question:** the instructions are right; `gpt-4o-mini` can't judge
-travel distances reliably. `gpt-4o` for revisions only is the candidate fix,
-not yet decided.
+The instructions were right; `gpt-4o-mini` can't judge travel distances
+reliably. Resolved in Step 30.
+
+### Step 30 · `gpt-4o` for revisions only (`770e1ac`, 2026-09-26)
+
+New setting `TRAVELMATE_REVISE_MODEL`, default `gpt-4o`, used by the reviser
+alone. Planning stays on `TRAVELMATE_MODEL` (`gpt-4o-mini`), so the extra
+cost only applies when someone changes a plan.
+
+- Same API key. One OpenAI key covers every model the account can use.
+- Revisions take about the same time (20–30 s). They cost more per call
+  than `gpt-4o-mini`.
+- **Verified through the running server:** "add 3 days in Ladakh" on the
+  Kerala trip returned 422 with *"Adding 3 days in Ladakh is not feasible
+  within the current itinerary…"*. The trip still had 2 versions afterwards.
 
 ---
 
@@ -601,20 +613,19 @@ not yet decided.
 |---|---|
 | Agent pipeline | ✅ 5 nodes, parallel flight/hotel, JSON-validated itinerary with retries |
 | Persistence | ✅ Postgres, append-only version history per `thread_id` |
-| Revisions | ✅ Backend, API and a "Change this plan" box; declined changes are refused with a reason. ⚠️ `gpt-4o-mini` judges travel distances poorly |
+| Revisions | ✅ Backend, API and a "Change this plan" box; declined changes are refused with a reason; revisions run on `gpt-4o` |
 | Frontend | ✅ Dark theme, free-text prompt, rupee rendering, cheapest/fastest flight table per leg, Flights/Hotels checkboxes, revise box — no history browser |
 | Travel data | ⚠️ **Flights are real** under `TRAVELMATE_PROVIDER=live` (Google Flights via SerpApi's MCP server, 100 searches/month, cached 6h). Lodging, attractions and weather are **still mock**. The `.env` default is still `mock` |
 | MCP | ✅ Two clients (SerpApi — used by the planner for flights; Tavily — standalone), two servers (AviationStack — now keyless, weather) |
 | Currency | ✅ Rupee-native, with legacy USD trips preserved |
-| Tests | ✅ 199 passing, `ruff` clean |
+| Tests | ✅ 200 passing, `ruff` clean |
 | GitHub | ✅ Pushed to `shanksri/Travelmate.ai` (public) over SSH |
 
 **Obvious next steps**, roughly in order of value:
 
-1. Decide on a stronger model for revisions (see Step 29).
-2. Real lodging data — the next-biggest gap now that flights are real.
-3. Frontend UI for browsing a trip's earlier versions (backend is done).
-4. Day-level patch revisions, if revision latency matters.
+1. Real lodging data — the next-biggest gap now that flights are real.
+2. Frontend UI for browsing a trip's earlier versions (backend is done).
+3. Day-level patch revisions, if revision latency matters.
 
 ---
 
