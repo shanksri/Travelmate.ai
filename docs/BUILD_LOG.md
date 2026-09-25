@@ -605,6 +605,39 @@ cost only applies when someone changes a plan.
   Kerala trip returned 422 with *"Adding 3 days in Ladakh is not feasible
   within the current itinerary…"*. The trip still had 2 versions afterwards.
 
+### Step 31 · No more planning somewhere nobody asked for (`b6f6afd`, 2026-09-26)
+
+**The bug:** "give me varanasi to kerala and tamil nadu itenary" produced a
+five-day **Chiang Mai, Thailand** plan. The itinerary AI wasn't the cause:
+
+1. The parser returned **no destination**, 4 times out of 4. It put "Kerala
+   and Tamil Nadu" in `notes`, apparently not counting two states as *a*
+   place.
+2. An empty destination sends the graph to `resolve_destination`, which
+   picks from the provider's **sample list**. The trace read
+   `coordinator: picked Chiang Mai, Thailand (matched [])`, meaning it
+   matched none of the interests.
+3. Five days is the default length when none is given.
+
+**Fixes:**
+
+- The parser prompt says a destination can be a city, state, region or
+  country, **or several together**, and is null only when no place was
+  named. After the fix, the same sentence parsed as "Kerala and Tamil Nadu"
+  7 times out of 7, and "Rajasthan and Gujarat" works the same way.
+- `plan_trip_from_prompt` refuses a missing destination with a 422, *"no
+  destination was named. Say where you want to go…"*, before any agent
+  runs. Verified through the server: refused in 2.3 s, nothing saved.
+- The structured `POST /trips/plan` keeps its documented pick-one behaviour.
+
+**Tried and reverted:** a line telling the parser "a kind of place (a
+beach, the mountains) is not a destination". `gpt-4o-mini` copied it
+literally and returned `"a beach"` as the destination. So a vague request
+like "suggest me a beach trip" still gets a vague destination.
+
+The checkboxes were confirmed working as intended: the Chiang Mai trip's
+trace shows both flight and hotel agents skipped, with no search.
+
 ---
 
 ## Where things stand
@@ -618,7 +651,7 @@ cost only applies when someone changes a plan.
 | Travel data | ⚠️ **Flights are real** under `TRAVELMATE_PROVIDER=live` (Google Flights via SerpApi's MCP server, 100 searches/month, cached 6h). Lodging, attractions and weather are **still mock**. The `.env` default is still `mock` |
 | MCP | ✅ Two clients (SerpApi — used by the planner for flights; Tavily — standalone), two servers (AviationStack — now keyless, weather) |
 | Currency | ✅ Rupee-native, with legacy USD trips preserved |
-| Tests | ✅ 200 passing, `ruff` clean |
+| Tests | ✅ 202 passing, `ruff` clean |
 | GitHub | ✅ Pushed to `shanksri/Travelmate.ai` (public) over SSH |
 
 **Obvious next steps**, roughly in order of value:
