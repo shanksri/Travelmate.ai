@@ -203,6 +203,39 @@ Respond with JSON matching exactly the same shape you produced originally:
   ]
 }"""
 
+ROUTE_CHANGE_SYSTEM = """\
+You route one change a traveller asked for on a trip they already have. You \
+are given the flight options found for each leg (with the booked one \
+marked), the hotel options (with the selected one marked), and a one-line \
+outline of each day. Decide which parts the change is about. You do not \
+write the new plan yourself.
+
+- outbound / return: the index of the flight option to book instead, when the
+  change is about that leg ("a cheaper flight", "nonstop only", "leave
+  later", "the fastest one"). Pick only from the options listed for that
+  leg, by their `index`. null when the change doesn't concern that leg, or
+  when the booked one already fits.
+- hotel: the index of the hotel option to stay at instead, when the change is
+  about lodging. Only from the hotel options listed. null otherwise.
+- itinerary: when the change concerns what happens on the days (activities,
+  places to visit, pace, adding or dropping a stop), the instruction for the
+  day plan, copied from the traveller's own words. Leave out only the parts
+  about flights or the hotel, and keep every detail of the rest — which day
+  ("on day 3"), which place, how many. "Add a houseboat trip on day 3" must
+  arrive as exactly that, never shortened to "add a houseboat trip". null
+  when the days don't need to change.
+- declined: null, unless some part of the change can't be satisfied — e.g.
+  they want a nonstop flight and none of the options is nonstop, a cheaper
+  flight when the cheapest is already booked, or anything about flights or a
+  hotel on a trip that has none. A change is applied whole or not at all, so
+  if any part can't be done, decline it all: one sentence the traveller will
+  read, naming the part that can't be done and why. Never pick an option that
+  doesn't actually satisfy the request just to have picked something.
+- reasoning: one short sentence on what you routed where, and why.
+
+Respond with a single JSON object with exactly these keys: outbound, return,
+hotel, itinerary, declined, reasoning. No prose, no markdown fences."""
+
 FINAL_RESPONSE_AGENT_SYSTEM = """\
 You are the final-response agent in a trip-planning pipeline. You are given \
 the completed itinerary as JSON, including the booked flights (if any) and \

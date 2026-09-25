@@ -233,15 +233,26 @@ function flightWhen(flight) {
   return flight.departure_at ? `${day}, ${iso.slice(11, 16)}` : day;
 }
 
-function renderFlightOption(flight) {
+// The booked leg is a copy of one of the options (plus the agent's rationale),
+// so it's recognised by its fields rather than by position.
+function sameFlight(a, b) {
+  if (!a || !b) return false;
+  return ["carrier", "depart_date", "departure_at", "stops", "duration_hours", "total"].every(
+    (key) => (a[key] ?? null) === (b[key] ?? null)
+  );
+}
+
+function renderFlightOption(flight, booked) {
   const stops = flight.stops === 0 ? "nonstop" : `${flight.stops} stop(s)`;
   const price = money(flight.total);
+  const isBooked = sameFlight(flight, booked);
   return `
-    <div class="option-row">
+    <div class="option-row${isBooked ? " booked" : ""}">
       <span class="option-info">
         <span class="option-duration">${flightDuration(flight.duration_hours)}</span>
         <span class="option-stops">${stops}</span>
         <span class="option-meta">${escapeHtml(flightWhen(flight))}</span>
+        ${isBooked ? '<span class="selected-tag">Booked</span>' : ""}
       </span>
       <span class="option-price">${price ?? "—"}</span>
     </div>`;
@@ -249,7 +260,7 @@ function renderFlightOption(flight) {
 
 // Cheapest and fastest are picked here rather than server-side so both rows
 // come from the one option list the itinerary already carries.
-function renderFlightTable(label, options) {
+function renderFlightTable(label, options, booked) {
   if (!options || !options.length) return "";
 
   const route = options[0].origin && options[0].destination
@@ -266,7 +277,7 @@ function renderFlightTable(label, options) {
     list.length
       ? `<tr>
            <th scope="row">${title}</th>
-           <td colspan="2">${list.slice(0, OPTIONS_PER_ROW).map(renderFlightOption).join("")}</td>
+           <td colspan="2">${list.slice(0, OPTIONS_PER_ROW).map((f) => renderFlightOption(f, booked)).join("")}</td>
          </tr>`
       : "";
 
@@ -341,8 +352,8 @@ function renderTrip(trip) {
       ${trip.summary ? `<p class="summary">${escapeHtml(trip.summary)}</p>` : ""}
     </div>
 
-    ${renderFlightTable("Outbound options", it.outbound_options)}
-    ${renderFlightTable("Return options", it.return_options)}
+    ${renderFlightTable("Outbound options", it.outbound_options, it.outbound_flight)}
+    ${renderFlightTable("Return options", it.return_options, it.return_flight)}
 
     ${
       it.lodging_options.length

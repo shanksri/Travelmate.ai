@@ -182,15 +182,25 @@ history), `version` (1, 2, 3...) and `change_note` (what was asked for —
 `null` on the original). `id` still identifies that one version, so
 `GET /trips/{id}` keeps working and old versions stay retrievable forever.
 
-A revision runs **only** the itinerary step (`app/agent/reviser.py`), not the
-five-node planning graph: destination, dates, flights and lodging carry over
-untouched from the version being revised, and are deliberately withheld from
-the model's prompt so a request to reshuffle day 3 can't quietly swap the
-hotel or re-price a flight. `REVISE_ITINERARY_SYSTEM` requires the complete
-plan back — every day, with untouched days returned unchanged — and the
-result goes through the same `parse_itinerary` validation (exact dates, in
-order) and the same retry-with-feedback loop as the original. Only the
-activity portion of the total cost is recomputed.
+A revision doesn't rerun the five-node planning graph (`app/agent/reviser.py`).
+A router call (`ROUTE_CHANGE_SYSTEM`) first decides which parts the change is
+about, then only those are touched:
+
+- **Flights and the hotel** are re-picked from the options the original
+  search already found, by index. Nothing is searched again and no model
+  types a flight or hotel, so a new pick can't be hallucinated. "Nonstop
+  flights both ways" takes about 3 s.
+- **The day plan** is re-generated only when the change is about it
+  (`REVISE_ITINERARY_SYSTEM`), with flights and lodging withheld from that
+  prompt. It goes through the same `parse_itinerary` validation and
+  retry-with-feedback loop as the original.
+- **All or nothing.** If any part can't be done (a cheaper flight when the
+  cheapest is booked, a nonstop when none exists, flights on a trip without
+  any), the whole change is refused with a 422 naming that part, and nothing
+  is saved.
+
+Destination and dates never change. The total cost is recomputed from
+whatever is booked afterwards.
 
 Verified end-to-end on a real 4-day Kyoto trip: "more activities on day 3"
 took day 3 from 2 to 3 activities, left days 1, 2 and 4 byte-for-byte
@@ -210,7 +220,7 @@ loop for a tea house while leaving the newly added day-3 activity in place.
 | `app/agent/itinerary_json.py` | Parses and Pydantic-validates the itinerary agent's JSON |
 | `app/agent/prompt_parser.py` | Turns one free-text sentence into a `TripRequest` — what powers the frontend's single prompt box |
 | `app/agent/planner.py` | `plan_trip()` / `plan_trip_from_prompt()` — build the graph, invoke it, map the result to a `PlannedTrip` |
-| `app/agent/reviser.py` | `revise_trip()` — applies one requested change to an existing trip, re-running only the itinerary step |
+| `app/agent/reviser.py` | `revise_trip()` — routes one requested change to the flights, hotel and/or day plan of an existing trip, and applies only those |
 | `app/providers/` | The travel data seam (`TravelProvider` Protocol) |
 | `app/models/itinerary.py` | `TripRequest`, `Itinerary`, `PlannedTrip` |
 | `app/api/` | FastAPI routes and wire schemas |

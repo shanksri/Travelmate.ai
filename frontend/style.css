@@ -375,6 +375,11 @@ button[type="submit"]:not(:disabled):hover {
   font-size: 0.8rem;
 }
 
+.option-row.booked .option-duration,
+.option-row.booked .option-price {
+  color: #a9b8ff;
+}
+
 .option-price {
   font-weight: 700;
   white-space: nowrap;
