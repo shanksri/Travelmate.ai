@@ -52,6 +52,23 @@
 
     <div id="status" class="status" hidden></div>
 
+    <section id="revise-card" class="card" hidden>
+      <h3>Change this plan</h3>
+      <form id="revise-form">
+        <textarea
+          id="revise-input"
+          name="change_request"
+          rows="2"
+          maxlength="2000"
+          placeholder="e.g. Add more activities on day 3"
+          required
+        ></textarea>
+        <div class="form-footer">
+          <button type="submit" id="revise-button">Update Plan</button>
+        </div>
+      </form>
+    </section>
+
     <section id="result" class="result" hidden></section>
   </main>
 

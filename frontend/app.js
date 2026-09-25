@@ -8,6 +8,14 @@ const statusText = document.getElementById("status-text");
 const chipsEl = document.getElementById("chips");
 const includeFlights = document.getElementById("include-flights");
 const includeHotels = document.getElementById("include-hotels");
+const reviseCard = document.getElementById("revise-card");
+const reviseForm = document.getElementById("revise-form");
+const reviseInput = document.getElementById("revise-input");
+const reviseButton = document.getElementById("revise-button");
+
+// The trip every change applies to. Each change is saved server-side as the
+// next version of this thread, so earlier versions are never overwritten.
+let currentThreadId = null;
 
 checkOnlineStatus();
 
@@ -25,6 +33,7 @@ form.addEventListener("submit", async (event) => {
   if (!prompt) return;
 
   resultEl.hidden = true;
+  reviseCard.hidden = true;
   submitButton.disabled = true;
   setStatus(
     "loading",
@@ -52,6 +61,40 @@ form.addEventListener("submit", async (event) => {
   } catch (err) {
     setStatus("error", err.message || "Something went wrong.");
   } finally {
+    submitButton.disabled = false;
+  }
+});
+
+reviseForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  const changeRequest = reviseInput.value.trim();
+  if (!changeRequest || !currentThreadId) return;
+
+  reviseButton.disabled = true;
+  submitButton.disabled = true;
+  setStatus("loading", "Updating your plan — this rewrites the itinerary and can take 30-60 seconds...");
+
+  try {
+    const response = await fetch(`/trips/${encodeURIComponent(currentThreadId)}/revise`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ change_request: changeRequest }),
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(extractErrorMessage(data));
+    }
+
+    hideStatus();
+    reviseInput.value = "";
+    renderTrip(data.trip);
+  } catch (err) {
+    // The plan on screen is untouched, so the change can simply be retried.
+    setStatus("error", err.message || "Something went wrong.");
+  } finally {
+    reviseButton.disabled = false;
     submitButton.disabled = false;
   }
 });
@@ -225,6 +268,9 @@ function renderTrip(trip) {
   const it = trip.itinerary;
   tripCurrency = it.currency || "INR";
   const total = money(it.total_estimated_cost);
+
+  currentThreadId = trip.thread_id || trip.id;
+  reviseCard.hidden = false;
 
   resultEl.hidden = false;
   resultEl.innerHTML = `

@@ -93,7 +93,8 @@ h1 {
   box-shadow: 0 0 6px var(--bad);
 }
 
-#prompt-form {
+#prompt-form,
+#revise-form {
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
