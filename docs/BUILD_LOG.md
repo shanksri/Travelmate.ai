@@ -538,6 +538,26 @@ intercepted in the browser, and all three combinations (none, flights only,
 both) went out exactly as ticked. Tests prove a skipped agent never touches
 its provider or the LLM.
 
+### Step 28 · "Change this plan" box (`8785852`, 2026-09-25)
+
+A second text box appears **above the generated plan** once there is one.
+Typing a change ("add more activities on day 3") posts it to the existing
+`POST /trips/{thread_id}/revise` endpoint from Step 20, and the page re-renders
+with the result. Changes stack, and each one builds on the previous result.
+
+- **The original is kept.** Each change is saved as the next version of the
+  same `thread_id`, and earlier versions are never overwritten. This is the
+  versioned store, not a cache. A cache can expire or evict, which is wrong
+  for anything a user edits.
+- Frontend only. The backend already existed.
+- Generating a new plan hides the box until that plan arrives, so a change
+  can't land on the wrong trip.
+
+**Verified without spending an OpenAI call**: a stored trip was rendered in
+the browser and the revise request was intercepted. It went to the right
+thread with the typed change, and the returned trip replaced the one on
+screen.
+
 ---
 
 ## Where things stand
@@ -546,8 +566,8 @@ its provider or the LLM.
 |---|---|
 | Agent pipeline | ✅ 5 nodes, parallel flight/hotel, JSON-validated itinerary with retries |
 | Persistence | ✅ Postgres, append-only version history per `thread_id` |
-| Revisions | ✅ Backend + API — **no frontend UI yet** |
-| Frontend | ✅ Dark theme, free-text prompt, rupee rendering, cheapest/fastest flight table per leg, Flights/Hotels checkboxes — no history/revise UI |
+| Revisions | ✅ Backend, API and a "Change this plan" box on the page |
+| Frontend | ✅ Dark theme, free-text prompt, rupee rendering, cheapest/fastest flight table per leg, Flights/Hotels checkboxes, revise box — no history browser |
 | Travel data | ⚠️ **Flights are real** under `TRAVELMATE_PROVIDER=live` (Google Flights via SerpApi's MCP server, 100 searches/month, cached 6h). Lodging, attractions and weather are **still mock**. The `.env` default is still `mock` |
 | MCP | ✅ Two clients (SerpApi — used by the planner for flights; Tavily — standalone), two servers (AviationStack — now keyless, weather) |
 | Currency | ✅ Rupee-native, with legacy USD trips preserved |
@@ -557,7 +577,7 @@ its provider or the LLM.
 **Obvious next steps**, roughly in order of value:
 
 1. Real lodging data — the next-biggest gap now that flights are real.
-2. Frontend UI for trip history and revisions (backend is done).
+2. Frontend UI for browsing a trip's earlier versions (backend is done).
 3. Day-level patch revisions, if revision latency matters.
 4. Push to GitHub.
 
