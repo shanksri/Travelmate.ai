@@ -638,6 +638,34 @@ like "suggest me a beach trip" still gets a vague destination.
 The checkboxes were confirmed working as intended: the Chiang Mai trip's
 trace shows both flight and hotel agents skipped, with no search.
 
+### Step 32 · Calendar date pickers (`a50d976`, 2026-09-26)
+
+Optional **Start** and **End** pickers sit next to the Flights/Hotels
+checkboxes. They use the browser's built-in date input, with
+`color-scheme: dark` so the calendar popup matches the theme.
+
+- **Optional, and they win.** With both picked, `start_date` / `end_date`
+  replace whatever dates the sentence implied. This follows the checkboxes'
+  pattern: applied after parsing, not left for the model to infer. With
+  neither picked, the sentence and the defaults decide. That is where the
+  "5 days starting two weeks out" guess comes from, which is what a request
+  like "Varanasi to Kerala" used to get.
+- **Checked twice.** The pickers won't offer a past start, an end before the
+  start, or more than 60 nights, and the page refuses half a pair. The API
+  enforces the same limits with a 422 for anyone calling it directly. The
+  60-night limit is now one constant, `MAX_TRIP_NIGHTS`, shared with
+  `TripRequest`.
+- The parsed request is re-validated with the picked dates rather than
+  `model_copy`'d, so picked dates pass the same checks as parsed ones.
+- Dates are formatted in the viewer's timezone. `toISOString()` would give
+  the UTC date, which is yesterday in India before 05:30.
+
+**Verified without running the pipeline:** in the browser, with the plan
+request intercepted, only-start was blocked on the page, both-picked sent
+the dates, and neither sent nulls. A real request with a past start got a
+422 from the server. At phone width the pickers wrap onto their own rows
+with no sideways scroll.
+
 ---
 
 ## Where things stand
@@ -647,11 +675,11 @@ trace shows both flight and hotel agents skipped, with no search.
 | Agent pipeline | ✅ 5 nodes, parallel flight/hotel, JSON-validated itinerary with retries |
 | Persistence | ✅ Postgres, append-only version history per `thread_id` |
 | Revisions | ✅ Backend, API and a "Change this plan" box; declined changes are refused with a reason; revisions run on `gpt-4o` |
-| Frontend | ✅ Dark theme, free-text prompt, rupee rendering, cheapest/fastest flight table per leg, Flights/Hotels checkboxes, revise box — no history browser |
+| Frontend | ✅ Dark theme, free-text prompt, rupee rendering, cheapest/fastest flight table per leg, Flights/Hotels checkboxes, optional date pickers, revise box — no history browser |
 | Travel data | ⚠️ **Flights are real** under `TRAVELMATE_PROVIDER=live` (Google Flights via SerpApi's MCP server, 100 searches/month, cached 6h). Lodging, attractions and weather are **still mock**. The `.env` default is still `mock` |
 | MCP | ✅ Two clients (SerpApi — used by the planner for flights; Tavily — standalone), two servers (AviationStack — now keyless, weather) |
 | Currency | ✅ Rupee-native, with legacy USD trips preserved |
-| Tests | ✅ 202 passing, `ruff` clean |
+| Tests | ✅ 213 passing, `ruff` clean |
 | GitHub | ✅ Pushed to `shanksri/Travelmate.ai` (public) over SSH |
 
 **Obvious next steps**, roughly in order of value:
