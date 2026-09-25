@@ -518,6 +518,26 @@ were mock data (the server is still on `TRAVELMATE_PROVIDER=mock`); the exact
 figures reproduced from the mock provider. Second time mock data has passed
 for real on the page.
 
+### Step 27 · Flights and Hotels checkboxes (`f02e877`, 2026-09-25)
+
+Two checkboxes under the prompt box, **unchecked by default**: flights and
+hotels are only searched when ticked. They set `include_flights` /
+`include_hotels` on `POST /trips/plan-from-prompt`, applied after parsing the
+sentence rather than inferred from it.
+
+- An unchecked agent **skips its search and its LLM call entirely**. Hiding
+  results after searching would still have spent a SerpApi search per leg.
+- The itinerary agent is told the traveller didn't ask for flights or a
+  hotel. The previous wording, "No lodging options were found", invited it to
+  improvise a hotel into the plan.
+- Both default to `true` on `TripRequest` and the API, so `POST /trips/plan`,
+  the CLI and stored trips are unchanged.
+
+**Verified without running the pipeline**, as the user asked: the request was
+intercepted in the browser, and all three combinations (none, flights only,
+both) went out exactly as ticked. Tests prove a skipped agent never touches
+its provider or the LLM.
+
 ---
 
 ## Where things stand
@@ -527,11 +547,11 @@ for real on the page.
 | Agent pipeline | ✅ 5 nodes, parallel flight/hotel, JSON-validated itinerary with retries |
 | Persistence | ✅ Postgres, append-only version history per `thread_id` |
 | Revisions | ✅ Backend + API — **no frontend UI yet** |
-| Frontend | ✅ Dark theme, free-text prompt, rupee rendering, cheapest/fastest flight table per leg — no history/revise UI |
+| Frontend | ✅ Dark theme, free-text prompt, rupee rendering, cheapest/fastest flight table per leg, Flights/Hotels checkboxes — no history/revise UI |
 | Travel data | ⚠️ **Flights are real** under `TRAVELMATE_PROVIDER=live` (Google Flights via SerpApi's MCP server, 100 searches/month, cached 6h). Lodging, attractions and weather are **still mock**. The `.env` default is still `mock` |
 | MCP | ✅ Two clients (SerpApi — used by the planner for flights; Tavily — standalone), two servers (AviationStack — now keyless, weather) |
 | Currency | ✅ Rupee-native, with legacy USD trips preserved |
-| Tests | ✅ 184 passing, `ruff` clean |
+| Tests | ✅ 190 passing, `ruff` clean |
 | GitHub | ❌ Never pushed — `gh auth login` was never completed, no remote configured |
 
 **Obvious next steps**, roughly in order of value:
