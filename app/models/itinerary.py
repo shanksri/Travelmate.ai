@@ -55,6 +55,12 @@ class TripRequest(BaseModel):
     interests: list[str] = Field(default_factory=list)
     pace: Pace = "balanced"
     notes: str | None = None
+    # Whether to search for flights / lodging at all. Default on, so every
+    # entry point that doesn't ask (the CLI, POST /trips/plan, trips stored
+    # before these existed) behaves as it always has; the frontend sends both
+    # explicitly from its checkboxes.
+    include_flights: bool = True
+    include_hotels: bool = True
 
     @model_validator(mode="before")
     @classmethod

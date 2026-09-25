@@ -68,15 +68,24 @@ def plan_trip(
 def plan_trip_from_prompt(
     prompt: str,
     *,
+    include_flights: bool = True,
+    include_hotels: bool = True,
     llm: LLM | None = None,
     provider: TravelProvider | None = None,
     settings: Settings | None = None,
 ) -> PlannedTrip:
     """Parse one free-text request, then plan it — the frontend's single
     prompt box calls this. Builds the LLM once and reuses it for both the
-    parsing step and the whole planning graph."""
+    parsing step and the whole planning graph.
+
+    `include_flights` / `include_hotels` come from the frontend's checkboxes,
+    not from the sentence, so they're applied after parsing rather than left
+    for the model to infer.
+    """
     settings = settings or get_settings()
     llm = llm or _build_llm(settings)
 
-    request = parse_trip_prompt(prompt, llm)
+    request = parse_trip_prompt(prompt, llm).model_copy(
+        update={"include_flights": include_flights, "include_hotels": include_hotels}
+    )
     return plan_trip(request, llm=llm, provider=provider, settings=settings)

@@ -323,3 +323,70 @@ def test_final_response_node_skips_when_there_is_no_itinerary(trip_request):
 
     assert result["final_response"] == ""
     assert llm.calls == []
+
+
+# --- flights / hotels checkboxes ---------------------------------------------
+
+
+class _NoSearchProvider:
+    """Fails loudly if asked to search — proves a skipped agent really
+    skipped, rather than searching and discarding (which would still spend a
+    SerpApi search on live data)."""
+
+    def search_flights(self, *args, **kwargs):
+        raise AssertionError("flight search ran although flights weren't requested")
+
+    def search_lodging(self, *args, **kwargs):
+        raise AssertionError("hotel search ran although hotels weren't requested")
+
+
+def test_flight_node_skips_search_and_llm_when_flights_are_unchecked(trip_request):
+    request = trip_request.model_copy(update={"include_flights": False})
+    llm = FakeLLM()  # no scripted responses: any LLM call would fail the test
+    node = build_flight_node(_NoSearchProvider(), llm)
+
+    result = node(initial_state(request) | {"resolved_destination": "Lisbon, Portugal"})
+
+    assert result["flight_results"]["outbound_options"] == []
+    assert result["flight_results"]["return_options"] == []
+    assert "not requested" in result["messages"][0]
+    assert llm.calls == []
+
+
+def test_hotel_node_skips_search_and_llm_when_hotels_are_unchecked(trip_request):
+    request = trip_request.model_copy(update={"include_hotels": False})
+    llm = FakeLLM()
+    node = build_hotel_node(_NoSearchProvider(), llm)
+
+    result = node(initial_state(request) | {"resolved_destination": "Lisbon, Portugal"})
+
+    assert result["hotel_results"]["options"] == []
+    assert "not requested" in result["messages"][0]
+    assert llm.calls == []
+
+
+def test_itinerary_agent_is_told_flights_and_hotels_were_not_requested(provider, trip_request):
+    """Otherwise it's told "No lodging options were found", which invites it
+    to improvise a hotel into the plan."""
+    request = trip_request.model_copy(update={"include_flights": False, "include_hotels": False})
+    llm = FakeLLM(responses=[draft_itinerary_json(request)])
+    node = build_itinerary_node(provider, llm, max_retries=2)
+    state = initial_state(request) | {
+        "resolved_destination": "Lisbon, Portugal",
+        "flight_results": {"outbound_options": [], "return_options": []},
+        "hotel_results": {"options": []},
+    }
+
+    itinerary = node(state)["itinerary"]
+
+    prompt = llm.calls[0]["user"]
+    assert "didn't ask for flights" in prompt
+    assert "didn't ask for a hotel" in prompt
+    assert itinerary.outbound_flight is None
+    assert itinerary.lodging_options == []
+
+
+def test_both_are_searched_by_default(provider, trip_request):
+    """Every caller that predates the checkboxes keeps the full plan."""
+    assert trip_request.include_flights is True
+    assert trip_request.include_hotels is True

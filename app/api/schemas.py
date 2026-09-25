@@ -17,6 +17,10 @@ class PlanFromPromptRequest(BaseModel):
     """One free-text trip request, e.g. "Plan a 5 day Dubai trip from Dhaka"."""
 
     prompt: str = Field(min_length=1, max_length=2000)
+    # The frontend's checkboxes. Default on, so a caller that doesn't send
+    # them gets the full plan, as before these existed.
+    include_flights: bool = True
+    include_hotels: bool = True
 
 
 class ReviseTripRequest(BaseModel):

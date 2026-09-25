@@ -6,6 +6,8 @@ const submitButton = document.getElementById("submit-button");
 const statusDot = document.getElementById("status-dot");
 const statusText = document.getElementById("status-text");
 const chipsEl = document.getElementById("chips");
+const includeFlights = document.getElementById("include-flights");
+const includeHotels = document.getElementById("include-hotels");
 
 checkOnlineStatus();
 
@@ -33,7 +35,11 @@ form.addEventListener("submit", async (event) => {
     const response = await fetch("/trips/plan-from-prompt", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({
+        prompt,
+        include_flights: includeFlights.checked,
+        include_hotels: includeHotels.checked,
+      }),
     });
     const data = await response.json();
 

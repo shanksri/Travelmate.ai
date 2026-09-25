@@ -78,7 +78,13 @@ def create_plan_from_prompt(payload: PlanFromPromptRequest) -> PlanTripResponse:
     """Plan a trip from one free-text sentence — parses it into the same
     structured parameters `create_plan` takes, then runs the same pipeline."""
     try:
-        return _run(lambda: plan_trip_from_prompt(payload.prompt))
+        return _run(
+            lambda: plan_trip_from_prompt(
+                payload.prompt,
+                include_flights=payload.include_flights,
+                include_hotels=payload.include_hotels,
+            )
+        )
     except PromptParseError as exc:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, f"Couldn't understand that trip request: {exc}"

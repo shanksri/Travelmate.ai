@@ -78,6 +78,15 @@ def build_flight_node(provider: TravelProvider, llm: LLM):
 
     def node(state: TravelState) -> dict:
         request = state["request"]
+        if not request.include_flights:
+            return {
+                "flight_results": {
+                    "outbound_options": [],
+                    "return_options": [],
+                    "recommendation": "Flights weren't requested, so flight search was skipped.",
+                },
+                "messages": ["flight_agent: skipped (flights not requested)"],
+            }
         if not request.origin:
             return {
                 "flight_results": {
@@ -135,6 +144,15 @@ def build_flight_node(provider: TravelProvider, llm: LLM):
 def build_hotel_node(provider: TravelProvider, llm: LLM):
     def node(state: TravelState) -> dict:
         request = state["request"]
+        if not request.include_hotels:
+            return {
+                "hotel_results": {
+                    "options": [],
+                    "recommendation": "Hotels weren't requested, so hotel search was skipped.",
+                },
+                "messages": ["hotel_agent: skipped (hotels not requested)"],
+            }
+
         options = provider.search_lodging(
             destination=state["resolved_destination"],
             check_in=request.start_date,
@@ -220,7 +238,12 @@ def build_itinerary_node(provider: TravelProvider, llm: LLM, max_retries: int):
         )
         hotel_cost = lodging[0].total or 0 if lodging else 0
 
-        if not request.origin:
+        if not request.include_flights:
+            flight_note = (
+                "The traveller didn't ask for flights, so no flight is included in the cost "
+                "below. Don't plan or cost one yourself."
+            )
+        elif not request.origin:
             flight_note = "No origin was given, so no flight is included in the cost below."
         elif outbound_flight is None and return_flight is None:
             flight_note = "No flight fares were found, so no flight is included in the cost below."
@@ -229,12 +252,18 @@ def build_itinerary_node(provider: TravelProvider, llm: LLM, max_retries: int):
                 f"Flights already booked: Rs {flight_cost:,.0f} total. "
                 "Do not plan or re-cost the flight yourself."
             )
-        hotel_note = (
-            f"Hotel already booked: {lodging[0].name}, Rs {hotel_cost:,.0f} total. "
-            "Do not plan or re-cost lodging yourself."
-            if lodging
-            else "No lodging options were found."
-        )
+        if not request.include_hotels:
+            hotel_note = (
+                "The traveller didn't ask for a hotel, so no lodging is included in the cost "
+                "below. Don't plan or cost one yourself."
+            )
+        elif lodging:
+            hotel_note = (
+                f"Hotel already booked: {lodging[0].name}, Rs {hotel_cost:,.0f} total. "
+                "Do not plan or re-cost lodging yourself."
+            )
+        else:
+            hotel_note = "No lodging options were found."
 
         # Handed over pre-computed, not left for the model to derive from
         # start/end dates — asking it to count calendar days itself invites

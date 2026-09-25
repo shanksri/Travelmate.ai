@@ -84,6 +84,15 @@ same `plan_trip()`. Missing dates resolve to a documented default computed in
 code (a bare duration defaults to starting 2 weeks out; nothing at all
 defaults to a 5-day trip) — never left for the model to invent.
 
+**Flights and hotels are opt-in from the frontend.** Two checkboxes under the
+prompt box (both unchecked by default) set `include_flights` /
+`include_hotels` on the request. An unchecked one means that agent **skips
+its search and its LLM call entirely** — not search-then-hide, which would
+still spend a SerpApi search — and the itinerary agent is told the traveller
+didn't ask for it, so it doesn't improvise a hotel into the plan. Both default
+to `true` on the API and `TripRequest`, so `POST /trips/plan`, the CLI and
+already-stored trips behave as before.
+
 ## Quick start
 
 ```bash

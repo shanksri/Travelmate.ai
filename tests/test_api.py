@@ -90,7 +90,8 @@ def test_trip_request_rejects_absurd_durations():
 def test_plan_from_prompt_delegates_to_the_parser_and_planner(client, trip_request, monkeypatch):
     trip = sample_planned_trip(trip_request)
     monkeypatch.setattr(
-        "app.api.routes.trips.plan_trip_from_prompt", lambda prompt: trip if prompt else None
+        "app.api.routes.trips.plan_trip_from_prompt",
+        lambda prompt, **kwargs: trip if prompt else None,
     )
 
     response = client.post("/trips/plan-from-prompt", json={"prompt": "Dubai for 5 days"})
@@ -102,7 +103,7 @@ def test_plan_from_prompt_delegates_to_the_parser_and_planner(client, trip_reque
 def test_plan_from_prompt_rejects_an_unparseable_request(client, monkeypatch):
     from app.agent.prompt_parser import PromptParseError
 
-    def boom(_prompt):
+    def boom(_prompt, **kwargs):
         raise PromptParseError("no destination or dates in that at all")
 
     monkeypatch.setattr("app.api.routes.trips.plan_trip_from_prompt", boom)
@@ -111,6 +112,40 @@ def test_plan_from_prompt_rejects_an_unparseable_request(client, monkeypatch):
 
     assert response.status_code == 422
     assert "couldn't understand" in response.json()["detail"].lower()
+
+
+def test_plan_from_prompt_passes_the_checkboxes_through(client, trip_request, monkeypatch):
+    seen = {}
+
+    def fake(prompt, **kwargs):
+        seen.update(kwargs)
+        return sample_planned_trip(trip_request)
+
+    monkeypatch.setattr("app.api.routes.trips.plan_trip_from_prompt", fake)
+
+    client.post(
+        "/trips/plan-from-prompt",
+        json={"prompt": "Goa for 3 days", "include_flights": True, "include_hotels": False},
+    )
+
+    assert seen == {"include_flights": True, "include_hotels": False}
+
+
+def test_plan_from_prompt_includes_both_when_a_caller_does_not_say(
+    client, trip_request, monkeypatch
+):
+    """Callers that predate the checkboxes still get the full plan."""
+    seen = {}
+
+    def fake(prompt, **kwargs):
+        seen.update(kwargs)
+        return sample_planned_trip(trip_request)
+
+    monkeypatch.setattr("app.api.routes.trips.plan_trip_from_prompt", fake)
+
+    client.post("/trips/plan-from-prompt", json={"prompt": "Goa for 3 days"})
+
+    assert seen == {"include_flights": True, "include_hotels": True}
 
 
 def test_plan_from_prompt_rejects_an_empty_prompt(client):
