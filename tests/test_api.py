@@ -232,6 +232,28 @@ def test_revision_failure_surfaces_as_502(client, trip_request, monkeypatch):
     assert "could not be applied" in response.json()["detail"]
 
 
+def test_a_declined_revision_is_a_422_with_the_reason_and_saves_nothing(
+    client, trip_request, monkeypatch
+):
+    from app.agent.reviser import RevisionDeclined
+
+    get_store().save(sample_planned_trip(trip_request, trip_id="d-v1", thread_id="declined"))
+
+    def decline(previous, change_request):
+        raise RevisionDeclined("Rameshwaram is too far for the days left.")
+
+    monkeypatch.setattr("app.api.routes.trips.revise_trip", decline)
+
+    response = client.post("/trips/declined/revise", json={"change_request": "add rameshwaram"})
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "Couldn't apply this change: Rameshwaram is too far for the days left."
+    )
+    versions = client.get("/trips/declined/history").json()["versions"]
+    assert [v["version"] for v in versions] == [1]
+
+
 def test_history_returns_every_version_oldest_first(client, trip_request):
     for n in (1, 2, 3):
         get_store().save(

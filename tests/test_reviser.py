@@ -8,7 +8,7 @@ import pytest
 from conftest import FakeLLM, draft_itinerary_payload, sample_planned_trip
 
 from app.agent.prompts import FINAL_RESPONSE_AGENT_SYSTEM, REVISE_ITINERARY_SYSTEM
-from app.agent.reviser import RevisionError, revise_trip
+from app.agent.reviser import DECLINE_PREFIX, RevisionDeclined, RevisionError, revise_trip
 from app.core.config import Settings
 from app.models.itinerary import DayPlan, FlightLeg, LodgingOption
 
@@ -44,8 +44,16 @@ def planned(trip_request):
     return trip
 
 
-def revising_llm(trip_request, **overrides) -> FakeLLM:
-    payload = draft_itinerary_payload(trip_request) | overrides
+def changed_payload(trip_request, tag: str = "revised") -> dict:
+    """A draft whose days differ from the `planned` fixture's. One that comes
+    back identical is refused as a declined change."""
+    payload = draft_itinerary_payload(trip_request)
+    payload["days"][0]["summary"] = f"Day 1 ({tag})"
+    return payload
+
+
+def revising_llm(trip_request, tag: str = "revised", **overrides) -> FakeLLM:
+    payload = changed_payload(trip_request, tag) | overrides
     return FakeLLM(
         by_system={
             REVISE_ITINERARY_SYSTEM: [json.dumps(payload)],
@@ -135,7 +143,7 @@ def test_an_invalid_response_is_retried_with_feedback(planned, trip_request, set
         by_system={
             REVISE_ITINERARY_SYSTEM: [
                 "not json at all",
-                json.dumps(draft_itinerary_payload(trip_request)),
+                json.dumps(changed_payload(trip_request)),
             ],
             FINAL_RESPONSE_AGENT_SYSTEM: ["Summary."],
         }
@@ -157,12 +165,94 @@ def test_giving_up_raises_rather_than_saving_a_broken_version(planned, trip_requ
         revise_trip(planned, "more on day 3", llm=llm, settings=settings)
 
 
+def test_earlier_notes_are_not_shown_to_the_model(planned, trip_request, settings):
+    """An earlier refusal note kept the model refusing the same place."""
+    planned.itinerary.notes = ["Rameshwaram is not included as it needs travel changes."]
+    llm = revising_llm(trip_request)
+
+    revise_trip(planned, "add rameshwaram", llm=llm, settings=settings)
+
+    revise_call = next(c for c in llm.calls if c["system"] == REVISE_ITINERARY_SYSTEM)
+    assert "is not included" not in revise_call["user"]
+
+
 def test_a_revision_can_itself_be_revised(planned, trip_request, settings):
     second = revise_trip(
         planned, "more on day 3", llm=revising_llm(trip_request), settings=settings
     )
-    third = revise_trip(second, "now day 4", llm=revising_llm(trip_request), settings=settings)
+    third = revise_trip(
+        second, "now day 4", llm=revising_llm(trip_request, tag="again"), settings=settings
+    )
 
     assert [t.version for t in (planned, second, third)] == [1, 2, 3]
     assert third.thread_id == planned.thread_id
     assert third.change_note == "now day 4"
+
+
+# --- a change the model didn't make ------------------------------------------
+
+
+def unchanged_llm(trip_request, notes: list[str]) -> FakeLLM:
+    """Returns the `planned` fixture's days exactly as they were."""
+    payload = draft_itinerary_payload(trip_request) | {"notes": notes}
+    return FakeLLM(by_system={REVISE_ITINERARY_SYSTEM: [json.dumps(payload)]})
+
+
+def test_unchanged_days_are_refused_with_the_models_reason(planned, trip_request, settings):
+    llm = unchanged_llm(
+        trip_request,
+        ["Book the castle ahead.", "Couldn't apply: Rameshwaram is too far for one day."],
+    )
+
+    with pytest.raises(RevisionDeclined) as declined:
+        revise_trip(planned, "add rameshwaram", llm=llm, settings=settings)
+
+    assert str(declined.value) == "Rameshwaram is too far for one day."
+
+
+def test_a_declined_change_skips_the_summary_and_isnt_retried(planned, trip_request, settings):
+    llm = unchanged_llm(trip_request, ["Couldn't apply: too far."])
+
+    with pytest.raises(RevisionDeclined):
+        revise_trip(planned, "add rameshwaram", llm=llm, settings=settings)
+
+    assert [c["system"] for c in llm.calls] == [REVISE_ITINERARY_SYSTEM]
+
+
+def test_a_newly_added_note_is_the_reason_when_the_prefix_is_missing(
+    planned, trip_request, settings
+):
+    """The Rameshwaram case as it actually happened: the model declined in a
+    plain note, alongside the note the trip already had."""
+    planned.itinerary.notes = ["Book the castle ahead."]
+    llm = unchanged_llm(
+        trip_request,
+        ["Book the castle ahead.", "Rameshwaram is not included as it needs travel changes."],
+    )
+
+    with pytest.raises(RevisionDeclined, match="Rameshwaram is not included"):
+        revise_trip(planned, "add rameshwaram", llm=llm, settings=settings)
+
+
+def test_a_silent_decline_still_gets_a_reason(planned, trip_request, settings):
+    planned.itinerary.notes = ["Book the castle ahead."]
+    llm = unchanged_llm(trip_request, ["Book the castle ahead."])
+
+    with pytest.raises(RevisionDeclined, match="returned the plan unchanged"):
+        revise_trip(planned, "add rameshwaram", llm=llm, settings=settings)
+
+
+def test_the_prompt_asks_for_the_prefix_the_code_looks_for():
+    assert f'"{DECLINE_PREFIX}"' in REVISE_ITINERARY_SYSTEM
+
+
+def test_the_prompt_allows_reshaping_days_for_a_new_place():
+    assert "is NOT a reason to decline" in REVISE_ITINERARY_SYSTEM
+    assert "adding a place" in REVISE_ITINERARY_SYSTEM
+
+
+def test_the_prompt_keeps_the_trips_start_and_end_fixed():
+    """Without it the model agreed to "3 days in Ladakh" by ending a Kochi
+    trip in Leh, two days short."""
+    assert "still starts and ends where it does now" in REVISE_ITINERARY_SYSTEM
+    assert "never quietly give fewer" in REVISE_ITINERARY_SYSTEM

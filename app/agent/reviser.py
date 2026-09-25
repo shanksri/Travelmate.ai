@@ -26,6 +26,31 @@ class RevisionError(RuntimeError):
     """The change was understood but no valid revised itinerary came back."""
 
 
+class RevisionDeclined(RuntimeError):
+    """The model returned every day unchanged — the change wasn't made.
+
+    Raised instead of saving a version identical to the one before it, so the
+    traveller is told why rather than shown the same plan again.
+    """
+
+
+# REVISE_ITINERARY_SYSTEM tells the model to start its explanation with this
+# when it declines, so the reason can be found among the other notes.
+DECLINE_PREFIX = "Couldn't apply:"
+
+
+def _decline_reason(draft_notes: list[str], previous_notes: list[str]) -> str:
+    for note in draft_notes:
+        if note.strip().startswith(DECLINE_PREFIX):
+            return note.strip().removeprefix(DECLINE_PREFIX).strip()
+    # The model may explain itself without the prefix; a note it just added
+    # is the next best thing.
+    new_notes = [note for note in draft_notes if note not in previous_notes]
+    if new_notes:
+        return " ".join(new_notes)
+    return "the planner returned the plan unchanged."
+
+
 def _build_llm(settings: Settings) -> LLM:
     return OpenAILLM(
         openai.OpenAI(),
@@ -46,7 +71,8 @@ def revise_trip(
 
     Pure in the sense that matters: it reads `previous` and returns a new
     `PlannedTrip`, and never touches the store — the caller decides whether
-    to keep the result.
+    to keep the result. Raises `RevisionDeclined` when the model leaves every
+    day as it was.
     """
     settings = settings or get_settings()
     llm = llm or _build_llm(settings)
@@ -56,7 +82,9 @@ def revise_trip(
 
     # Only the days go to the model. Flights and lodging are withheld on
     # purpose — it cannot change what it cannot see, and they're merged back
-    # in untouched below.
+    # in untouched below. The previous notes are withheld too: a note from an
+    # earlier refusal ("X is not included…") anchored the model into refusing
+    # the same place again, and it writes fresh notes every time anyway.
     current_days = json.dumps(
         [day.model_dump(mode="json") for day in itinerary.days], default=str
     )
@@ -67,7 +95,6 @@ def revise_trip(
         f"Travellers: {itinerary.travelers}\n"
         f"Pace: {request.pace}\n"
         f"Current plan: {current_days}\n\n"
-        f"Existing notes: {json.dumps(itinerary.notes)}\n\n"
         f"The traveller asks: {change_request}\n\n"
         f"Return all {len(trip_dates)} days, using exactly these dates in this "
         f"order: {json.dumps(trip_dates)}"
@@ -91,6 +118,14 @@ def revise_trip(
             feedback = exc.feedback
             last_error = exc.feedback
             continue
+
+        # Checked before the summary call: a declined change costs no more
+        # than the one LLM call that declined it, and is never saved.
+        unchanged = [day.model_dump(mode="json") for day in draft.days] == [
+            day.model_dump(mode="json") for day in itinerary.days
+        ]
+        if unchanged:
+            raise RevisionDeclined(_decline_reason(draft.notes, itinerary.notes))
 
         # Flights and lodging come straight off the previous version; only the
         # activity portion of the total is recomputed.

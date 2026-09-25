@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, status
 
 from app.agent.planner import PlanningError, plan_trip, plan_trip_from_prompt
 from app.agent.prompt_parser import PromptParseError
-from app.agent.reviser import RevisionError, revise_trip
+from app.agent.reviser import RevisionDeclined, RevisionError, revise_trip
 from app.api.schemas import (
     PlanFromPromptRequest,
     PlanTripRequest,
@@ -51,6 +51,12 @@ def _run(planning_call: Callable[[], PlannedTrip]) -> PlanTripResponse:
         logger.error("planning failed: %s", exc)
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY, f"The planner did not finish: {exc}"
+        ) from exc
+    except RevisionDeclined as exc:
+        # Nothing is saved: a version identical to the last one would only
+        # pad the history. The reason is the planner's own, for the traveller.
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, f"Couldn't apply this change: {exc}"
         ) from exc
     except RevisionError as exc:
         logger.error("revision failed: %s", exc)
