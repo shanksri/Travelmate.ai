@@ -666,6 +666,47 @@ the dates, and neither sent nulls. A real request with a past start got a
 422 from the server. At phone width the pickers wrap onto their own rows
 with no sideways scroll.
 
+### Step 33 · Changes routed to the right agent (`067a6eb`, 2026-09-26)
+
+Taken from a reference diagram's "request changes → loop back to relevant
+agents". Before this, "Change this plan" could only re-plan the days;
+"nonstop flights" or "a better hotel" had nowhere to go.
+
+- **A router call first** (`ROUTE_CHANGE_SYSTEM`, on the revise model). It
+  sees the flight options per leg with the booked one marked, the hotel
+  options with the selected one marked, and a one-line outline of each day.
+  It answers with the option index to switch to per leg and for the hotel,
+  the instruction for the days, or a decline reason. An index that doesn't
+  exist is sent back with feedback.
+- **Flights and the hotel are re-picked, never re-searched.** Choosing by
+  index from the saved options means no SerpApi quota is spent and no model
+  writes a flight or hotel, so nothing can be hallucinated. The hotel switch
+  moves the pick to the front of the list, because the first option is
+  "selected" everywhere.
+- **The days are re-planned only when the change concerns them.** A
+  flight-only change skips the ~15–20 s itinerary call: "nonstop flights both
+  ways" took 2.8 s live.
+- **All or nothing.** If any part can't be done, the whole change is refused
+  with a reason naming that part, and nothing is saved.
+- **Booked flights are now visible.** The flight tables tag the booked option
+  per leg. Before, the booked flight only showed up in the total cost, so a
+  flight change would have looked like nothing happened.
+
+**Bugs found live** (real `gpt-4o`, nothing saved):
+
+- "Nonstop outbound, and a houseboat trip on day 3" put the houseboat on
+  **day 2**. The router had passed on only "add a backwater houseboat trip".
+  The prompt now requires the day instruction in the traveller's own words,
+  keeping day numbers and places. On re-test only day 3 changed.
+- "A cheaper return flight (already the cheapest) and a houseboat on day 3"
+  applied only the houseboat and dropped the flight part silently. It now
+  declines with *"A cheaper return flight cannot be booked as the current
+  one is already the cheapest available."*
+
+**Limits:** most saved trips predate option lists, so on those, flight
+changes are refused ("no flight options"). A trip planned without flights
+can't gain them through a change; plan it again with Flights ticked.
+
 ---
 
 ## Where things stand
@@ -674,12 +715,12 @@ with no sideways scroll.
 |---|---|
 | Agent pipeline | ✅ 5 nodes, parallel flight/hotel, JSON-validated itinerary with retries |
 | Persistence | ✅ Postgres, append-only version history per `thread_id` |
-| Revisions | ✅ Backend, API and a "Change this plan" box; declined changes are refused with a reason; revisions run on `gpt-4o` |
+| Revisions | ✅ "Change this plan" box, routed to flights, hotel and/or days; refused whole with a reason when any part cannot be done; `gpt-4o` |
 | Frontend | ✅ Dark theme, free-text prompt, rupee rendering, cheapest/fastest flight table per leg, Flights/Hotels checkboxes, optional date pickers, revise box — no history browser |
 | Travel data | ⚠️ **Flights are real** under `TRAVELMATE_PROVIDER=live` (Google Flights via SerpApi's MCP server, 100 searches/month, cached 6h). Lodging, attractions and weather are **still mock**. The `.env` default is still `mock` |
 | MCP | ✅ Two clients (SerpApi — used by the planner for flights; Tavily — standalone), two servers (AviationStack — now keyless, weather) |
 | Currency | ✅ Rupee-native, with legacy USD trips preserved |
-| Tests | ✅ 213 passing, `ruff` clean |
+| Tests | ✅ 226 passing, `ruff` clean |
 | GitHub | ✅ Pushed to `shanksri/Travelmate.ai` (public) over SSH |
 
 **Obvious next steps**, roughly in order of value:
