@@ -558,6 +558,41 @@ the browser and the revise request was intercepted. It went to the right
 thread with the typed change, and the returned trip replaced the one on
 screen.
 
+### Step 29 · Revisions that can reshape the route, and say when they can't (`4914537`, 2026-09-26)
+
+**The bug:** "adjust rameshwaram in this itenary as well" saved a version 2
+with all ten days identical to version 1. The model had declined in a note
+("requires significant travel adjustments"), and the page no longer shows
+notes, so nothing seemed to happen.
+
+- **Two kinds of change in the revise prompt.** A small edit ("more on day 3")
+  still changes only the days it names. A route change (add, drop or extend a
+  place) may rework the days around it: shorten other stops, put the new
+  place where it falls geographically, add realistic transit. The old rule,
+  "every other day byte-for-byte", was what the model hid behind.
+- **Hard limits on declining.** The trip must still start and end where it
+  does, a new stop must fit its travel both ways, and a requested number of
+  days is given in full or declined. A decline starts with
+  `Couldn't apply:` so the code can find the reason.
+- **No silent failures.** If every day comes back unchanged, `revise_trip`
+  raises `RevisionDeclined` before the summary call. The API returns 422 with
+  the model's reason, the revise box shows it, and **nothing is saved**.
+- **Previous notes are no longer sent to the model.** Found live: revising
+  version 2 kept failing because its old refusal note, "Rameshwaram is not
+  included…", was fed back in as an existing note. Revising version 1 of the
+  same trip worked.
+
+**Tested live on the real Kerala trip, without saving:**
+
+| Request | `gpt-4o-mini` | `gpt-4o` |
+|---|---|---|
+| Add Rameshwaram | Applied, but placement varies between runs (after Madurai on one run, just before the Kochi departure on another) | Applied after Madurai, then Kanyakumari, then Kochi |
+| Add 3 days in Ladakh | Agreed: 1–2 days in Leh, once leaving the traveller in Leh on departure day | Declined, with a clear reason |
+
+**Open question:** the instructions are right; `gpt-4o-mini` can't judge
+travel distances reliably. `gpt-4o` for revisions only is the candidate fix,
+not yet decided.
+
 ---
 
 ## Where things stand
@@ -566,20 +601,20 @@ screen.
 |---|---|
 | Agent pipeline | ✅ 5 nodes, parallel flight/hotel, JSON-validated itinerary with retries |
 | Persistence | ✅ Postgres, append-only version history per `thread_id` |
-| Revisions | ✅ Backend, API and a "Change this plan" box on the page |
+| Revisions | ✅ Backend, API and a "Change this plan" box; declined changes are refused with a reason. ⚠️ `gpt-4o-mini` judges travel distances poorly |
 | Frontend | ✅ Dark theme, free-text prompt, rupee rendering, cheapest/fastest flight table per leg, Flights/Hotels checkboxes, revise box — no history browser |
 | Travel data | ⚠️ **Flights are real** under `TRAVELMATE_PROVIDER=live` (Google Flights via SerpApi's MCP server, 100 searches/month, cached 6h). Lodging, attractions and weather are **still mock**. The `.env` default is still `mock` |
 | MCP | ✅ Two clients (SerpApi — used by the planner for flights; Tavily — standalone), two servers (AviationStack — now keyless, weather) |
 | Currency | ✅ Rupee-native, with legacy USD trips preserved |
-| Tests | ✅ 190 passing, `ruff` clean |
-| GitHub | ❌ Never pushed — `gh auth login` was never completed, no remote configured |
+| Tests | ✅ 199 passing, `ruff` clean |
+| GitHub | ✅ Pushed to `shanksri/Travelmate.ai` (public) over SSH |
 
 **Obvious next steps**, roughly in order of value:
 
-1. Real lodging data — the next-biggest gap now that flights are real.
-2. Frontend UI for browsing a trip's earlier versions (backend is done).
-3. Day-level patch revisions, if revision latency matters.
-4. Push to GitHub.
+1. Decide on a stronger model for revisions (see Step 29).
+2. Real lodging data — the next-biggest gap now that flights are real.
+3. Frontend UI for browsing a trip's earlier versions (backend is done).
+4. Day-level patch revisions, if revision latency matters.
 
 ---
 
