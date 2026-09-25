@@ -461,6 +461,7 @@ Every setting is an environment variable prefixed `TRAVELMATE_`, or a line in
 |---|---|---|
 | `OPENAI_API_KEY` | — | Required (no prefix; read by the OpenAI SDK) |
 | `TRAVELMATE_MODEL` | `gpt-4o-mini` | **Must support JSON mode** (`response_format: json_object`) — the itinerary agent and the prompt parser both depend on it. Plain `gpt-4` does not support it and fails every request with a 400; `gpt-4o`/`gpt-4o-mini`/`gpt-4-turbo` do. |
+| `TRAVELMATE_REVISE_MODEL` | `gpt-4o` | Revisions only (`POST /trips/{thread_id}/revise`). Same JSON-mode requirement. `gpt-4o-mini` misjudges travel distances when fitting a new place into a route: it agreed to "3 days in Ladakh" on a Kochi trip. Costs more per call than `gpt-4o-mini`, but only when a plan is changed. |
 | `TRAVELMATE_TEMPERATURE` | `0.3` | |
 | `TRAVELMATE_MAX_TOKENS` | `16000` | Per LLM call. Deliberately generous — OpenAI bills by tokens actually generated, not this ceiling, and a longer or packed-pace itinerary can genuinely need more than a few thousand tokens. Too low and JSON mode's one failure mode (a response cut off mid-generation) starts happening under real use; see Known issues below. |
 | `TRAVELMATE_MAX_ITINERARY_RETRIES` | `2` | Extra attempts after a schema-invalid (or day-count-wrong) itinerary |

@@ -54,7 +54,7 @@ def _decline_reason(draft_notes: list[str], previous_notes: list[str]) -> str:
 def _build_llm(settings: Settings) -> LLM:
     return OpenAILLM(
         openai.OpenAI(),
-        model=settings.model,
+        model=settings.revise_model,
         temperature=settings.temperature,
         max_tokens=settings.max_tokens,
     )

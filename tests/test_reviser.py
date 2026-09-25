@@ -251,6 +251,28 @@ def test_the_prompt_allows_reshaping_days_for_a_new_place():
     assert "adding a place" in REVISE_ITINERARY_SYSTEM
 
 
+def test_revisions_use_their_own_model(monkeypatch):
+    """Planning stays on `model`; only revisions use `revise_model`."""
+    from types import SimpleNamespace
+
+    from app.agent import reviser
+
+    sent = {}
+
+    def create(**kwargs):
+        sent.update(kwargs)
+        message = SimpleNamespace(content="{}")
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    monkeypatch.setattr(reviser.openai, "OpenAI", lambda: client)
+
+    llm = reviser._build_llm(Settings(model="gpt-4o-mini", revise_model="gpt-4o"))
+    llm.complete(system="s", user="u")
+
+    assert sent["model"] == "gpt-4o"
+
+
 def test_the_prompt_keeps_the_trips_start_and_end_fixed():
     """Without it the model agreed to "3 days in Ladakh" by ending a Kochi
     trip in Leh, two days short."""

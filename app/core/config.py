@@ -15,6 +15,13 @@ class Settings(BaseSettings):
     # (response_format={"type": "json_object"}) — the itinerary agent depends
     # on it; plain "gpt-4" does not support it and fails with a 400.
     model: str = "gpt-4o-mini"
+
+    # Revisions only (app/agent/reviser.py). Fitting a new place into a
+    # finished route means judging travel distances, which gpt-4o-mini gets
+    # wrong: it agreed to "3 days in Ladakh" on a Kochi trip by leaving the
+    # traveller in Leh on departure day. gpt-4o declined it correctly. Same
+    # JSON-mode requirement as `model`.
+    revise_model: str = "gpt-4o"
     temperature: float = 0.3
 
     # OpenAI's JSON mode guarantees syntactically valid JSON *except* when the
