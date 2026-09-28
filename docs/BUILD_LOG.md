@@ -820,11 +820,60 @@ verified live in Step 35.
 | Tests | ✅ 264 passing, `ruff` clean |
 | GitHub | ✅ Pushed to `shanksri/Travelmate.ai` (public) over SSH |
 
-**Obvious next steps**, roughly in order of value:
+---
 
-1. Real lodging data — the next-biggest gap now that flights are real.
-2. Frontend UI for browsing a trip's earlier versions (backend is done).
-3. Day-level patch revisions, if revision latency matters.
+## Future plans
+
+Agreed on 2026-09-28 after an architecture review. Status is kept up to date
+here as items land.
+
+### Architecture
+
+The system grew in layers. Only trip planning runs as a LangGraph graph;
+routing /ask, revisions and per-city places are plain Python beside it.
+Every MCP call opens a fresh connection. The page waits in silence for up
+to a minute.
+
+| # | Plan | Why | Status |
+|---|---|---|---|
+| 1 | **Stream progress and results.** A plan request returns a job id at once; the server streams events ("flights found", then each day as it's written, then restaurants) over SSE. | Total time barely changes, but the first content appears in seconds instead of ~25 s, and closing the tab no longer loses the work. | Planned, with #2 |
+| 2 | **One orchestrator.** /ask becomes a graph with a routing step, then trip, places or route branches. Revisions become a small graph of their own. Per-city places become a LangGraph fan-out. | Parallelism, tracing and streaming in one place. Budget check and guardrails slot in as extra steps. | Planned |
+| 3 | **Keep MCP connections open; run parallel work concurrently.** One long-lived session per MCP server, reused across calls, instead of a new connection and handshake every time. | Every Maps and flight call pays the connection cost today. | **In progress** |
+| 4 | **Structured outputs.** Every JSON call passes its exact schema to OpenAI (`json_schema`, strict), instead of JSON mode, then hand checks, then retry. | Several fixed bugs were format failures, and each retry costs a full LLM call. | **In progress** |
+| 5 | **Evaluation suite and tracing.** The live checks done by hand become a fixed prompt set with expected outcomes, run against the real model on demand. Examples: "Ladakh → declined", "Kerala and Tamil Nadu → one destination", "houseboat → only day 3 changed". LangSmith tracing is already configured in `.env` but not connected. | Prompt and model changes stop being guesswork; per-plan cost becomes visible. | Planned, before the next big prompt change |
+| 6 | **One tools layer.** Flights, hotels, places, routes and weather each get an interface with sample and live implementations chosen by config. | Real hotels and real weather become small changes. The weather MCP server built in Step 19 is still unused by the planner. | Planned, with real hotels |
+
+The single `app.js` file and the versioned-JSON store with a hand-written
+migration are fine at this size and are not planned to change.
+
+### Features
+
+- **Input guardrails.** A "is this a travel request, and if not why" check
+  inside the existing parser call. Deferred by the user.
+- **Budget check.** Compare the estimated total with the stated budget in
+  code, not with an LLM agent. Deferred by the user.
+- **Real hotel data.** Google Hotels via SerpApi (`SERPAPI_HOTEL_API_KEY` is
+  already in `.env`); lodging is still sample data.
+- **Real weather in the itinerary.** Use the existing weather client or MCP
+  server instead of sample weather. Forecasts only reach about two weeks
+  ahead; later trips would use typical weather.
+- **Browse a trip's earlier versions** on the page (the API already has
+  `/trips/{id}/history`).
+- **Restaurants inside the day plan.** Named places in the activities ("Lunch
+  at Fort House"), not only in a separate card. Needs the cities decided
+  before the itinerary is written.
+- **City cards for revised versions.** Look up a revised plan's city places
+  again, since they aren't saved (Google's terms).
+- **Day-level patch revisions.** Regenerate only the days a change touches,
+  if revision latency matters.
+
+### Known limits carried forward
+
+- `gpt-4o-mini` turns "suggest me a beach trip" into destination "a beach"
+  (Step 31).
+- Maps Grounding Lite routes are driving or walking only (Step 34).
+- The Google Cloud free trial ends in December 2026; Maps stops unless the
+  account is upgraded then.
 
 ---
 
