@@ -784,6 +784,26 @@ The days came back based in Kochi and Munnar, and there were two cards,
 **Limit:** a revised version of the plan is shown without the city cards.
 They belong to the answer, not the saved trip.
 
+
+### Step 36 · Restaurants checkbox (`b8fc858`, 2026-09-28)
+
+A **Restaurants** box next to Flights and Hotels. Per-city places are looked
+up only when it's ticked, the same rule as the other two, rather than
+whenever the sentence mentions food. That was Step 35's trigger, and it made
+every such trip wait for Maps searches.
+
+- `include_restaurants` on `/ask`, **off by default**. Flights and hotels
+  default on, for callers that predate their boxes; nothing predates this.
+- The sentence still chooses the kind: "street food in each area" with
+  the box ticked searches "best street food in Kolkata". Without a kind,
+  it searches restaurants.
+- `plan_parsed_trip` always sets `places_per_city` from the box, so a saved
+  trip records what was actually looked up, not what the parser read.
+
+Verified in the browser with the request intercepted: the box is sent
+unticked by default and ticked when checked. The Maps lookup itself was
+verified live in Step 35.
+
 ---
 
 ## Where things stand
@@ -793,11 +813,11 @@ They belong to the answer, not the saved trip.
 | Agent pipeline | ✅ 5 nodes, parallel flight/hotel, JSON-validated itinerary with retries |
 | Persistence | ✅ Postgres, append-only version history per `thread_id` |
 | Revisions | ✅ "Change this plan" box, routed to flights, hotel and/or days; refused whole with a reason when any part cannot be done; `gpt-4o` |
-| Frontend | ✅ Dark theme, free-text prompt, rupee rendering, cheapest/fastest flight table per leg, Flights/Hotels checkboxes, optional date pickers, revise box — no history browser |
+| Frontend | ✅ Dark theme, free-text prompt, rupee rendering, cheapest/fastest flight table per leg, Flights/Hotels/Restaurants checkboxes, optional date pickers, revise box — no history browser |
 | Travel data | ⚠️ **Flights are real** under `TRAVELMATE_PROVIDER=live` (Google Flights via SerpApi's MCP server, 100 searches/month, cached 6h). Lodging, attractions and weather are **still mock**. The `.env` default is still `mock` |
 | MCP | ✅ Three clients (SerpApi — flights; Google Maps Grounding Lite — places and routes; Tavily — standalone), two servers (AviationStack — now keyless, weather) |
 | Currency | ✅ Rupee-native, with legacy USD trips preserved |
-| Tests | ✅ 261 passing, `ruff` clean |
+| Tests | ✅ 264 passing, `ruff` clean |
 | GitHub | ✅ Pushed to `shanksri/Travelmate.ai` (public) over SSH |
 
 **Obvious next steps**, roughly in order of value:
