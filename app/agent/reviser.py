@@ -31,6 +31,7 @@ from app.agent.prompts import (
 from app.core.config import Settings, get_settings
 from app.models.itinerary import (
     DayPlan,
+    DraftItinerary,
     FlightLeg,
     Itinerary,
     LodgingOption,
@@ -174,7 +175,9 @@ def _route_change(
         user_prompt = base_prompt
         if feedback:
             user_prompt += f"\n\nYour previous answer was rejected: {feedback} Fix it."
-        raw = llm.complete(system=ROUTE_CHANGE_SYSTEM, user=user_prompt, json_mode=True)
+        raw = llm.complete(
+            system=ROUTE_CHANGE_SYSTEM, user=user_prompt, json_mode=True, schema=ChangeRoute
+        )
         try:
             route = ChangeRoute.model_validate(json.loads(raw))
         except (json.JSONDecodeError, ValidationError) as exc:
@@ -229,7 +232,12 @@ def _revise_days(
                 "Fix it and return the complete JSON again."
             )
 
-        raw = llm.complete(system=REVISE_ITINERARY_SYSTEM, user=user_prompt, json_mode=True)
+        raw = llm.complete(
+            system=REVISE_ITINERARY_SYSTEM,
+            user=user_prompt,
+            json_mode=True,
+            schema=DraftItinerary,
+        )
         try:
             draft = parse_itinerary(raw, request)
         except ItineraryValidationError as exc:

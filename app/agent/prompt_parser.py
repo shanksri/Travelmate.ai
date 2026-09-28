@@ -145,7 +145,9 @@ def _interpret(
         if feedback:
             user += f"\n\nYour previous attempt was rejected: {feedback}\nFix it and try again."
 
-        raw = llm.complete(system=PARSE_REQUEST_SYSTEM, user=user, json_mode=True)
+        raw = llm.complete(
+            system=PARSE_REQUEST_SYSTEM, user=user, json_mode=True, schema=ParsedPrompt
+        )
         try:
             parsed = ParsedPrompt.model_validate(json.loads(raw))
         except (json.JSONDecodeError, ValidationError) as exc:

@@ -505,3 +505,16 @@ def test_the_router_prompt_declines_a_change_that_is_only_partly_possible():
     """Live, "a cheaper return flight (already the cheapest) and a houseboat on
     day 3" once applied only the houseboat and dropped the flight silently."""
     assert "applied whole or not at all" in ROUTE_CHANGE_SYSTEM
+
+
+def test_the_router_and_the_day_planner_send_their_schemas(planned, trip_request, settings):
+    from app.agent.reviser import ChangeRoute
+    from app.models.itinerary import DraftItinerary
+
+    llm = revising_llm(trip_request)
+    revise_trip(planned, "more on day 3", llm=llm, settings=settings)
+
+    schemas = {c["system"]: c["schema"] for c in llm.calls}
+    assert schemas[ROUTE_CHANGE_SYSTEM] is ChangeRoute
+    assert schemas[REVISE_ITINERARY_SYSTEM] is DraftItinerary
+    assert schemas[FINAL_RESPONSE_AGENT_SYSTEM] is None  # plain text

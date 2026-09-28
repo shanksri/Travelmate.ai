@@ -244,8 +244,12 @@ class FakeLLM:
         self._by_system = {key: list(value) for key, value in (by_system or {}).items()}
         self.calls: list[dict] = []
 
-    def complete(self, *, system: str, user: str, json_mode: bool = False) -> str:
-        self.calls.append({"system": system, "user": user, "json_mode": json_mode})
+    def complete(
+        self, *, system: str, user: str, json_mode: bool = False, schema=None
+    ) -> str:
+        self.calls.append(
+            {"system": system, "user": user, "json_mode": json_mode, "schema": schema}
+        )
 
         for key, queue in self._by_system.items():
             if key in system:

@@ -20,7 +20,7 @@ from app.agent.prompts import (
     describe_request,
 )
 from app.agent.state import TravelState
-from app.models.itinerary import FlightLeg, Itinerary, LodgingOption
+from app.models.itinerary import DraftItinerary, FlightLeg, Itinerary, LodgingOption
 from app.providers.base import TravelProvider
 
 # Rough daily-spend-per-person bands in rupees, used only to steer destination
@@ -302,7 +302,12 @@ def build_itinerary_node(provider: TravelProvider, llm: LLM, max_retries: int):
                     "Fix it and return the complete JSON again."
                 )
 
-            raw = llm.complete(system=ITINERARY_AGENT_SYSTEM, user=user_prompt, json_mode=True)
+            raw = llm.complete(
+                system=ITINERARY_AGENT_SYSTEM,
+                user=user_prompt,
+                json_mode=True,
+                schema=DraftItinerary,
+            )
             try:
                 draft = parse_itinerary(raw, request)
             except ItineraryValidationError as exc:
