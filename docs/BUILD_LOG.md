@@ -741,10 +741,18 @@ Madurai" now get answers instead of being planned as trips.
   showed the real message. The client now turns that case into a message
   saying what to check.
 
-**Not yet verified with a real Maps answer:** the API was still disabled at
-commit time. The client was built from the tools' published output
-schemas, the page layout was checked with sample answers in that format,
-and the full path (page → `/ask` → parser → Maps → error shown) ran live.
+**Verified live** once the API was enabled (the first call after enabling it
+was still refused, while the change took effect):
+
+| Sentence | Result | Time |
+|---|---|---|
+| "show me best places to eat in bhuvneshwar" | 5 restaurants, each with ★ rating and review count in the summary | 5.0 s |
+| "best street food in Kolkata" | 5 places, from Zakaria Street to a sweet shop open since 1844 | 3.0 s |
+| "how far is rameshwaram from madurai" | 173 km, about 3 h 3 min by road | 2.9 s |
+
+Each place's attribution title turned out to be its **name** ("The BOMBAI -
+Google Maps"). The footer now reads "From Google Maps:" followed by every
+place name linked (`0425071`), instead of repeating the full titles.
 
 ---
 
