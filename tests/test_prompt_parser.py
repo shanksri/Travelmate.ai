@@ -233,6 +233,38 @@ def test_parse_trip_prompt_always_plans_a_trip():
     assert request.destination == "Puri"
 
 
+def test_a_trip_can_also_ask_for_places_in_each_city():
+    """The live bug: "6 day kerala itenary, also tell me best places to eat in
+    each city" kept only a `food` interest, so no places were ever looked up."""
+    llm = FakeLLM(
+        responses=[
+            _payload(
+                intent="trip",
+                destination="Kerala",
+                duration_days=6,
+                interests=["food"],
+                places_per_city="restaurants",
+            )
+        ]
+    )
+
+    result = interpret_prompt(
+        "give me 6 day kerala itenary, also tell me best places to eat in each city",
+        llm,
+        today=TODAY,
+    )
+
+    assert result.intent == "trip"
+    assert result.trip.places_per_city == "restaurants"
+
+
+def test_the_prompt_says_a_food_interest_alone_is_not_a_places_request():
+    from app.agent.prompts import PARSE_REQUEST_SYSTEM
+
+    assert "places_per_city" in PARSE_REQUEST_SYSTEM
+    assert "a food interest alone is not it" in PARSE_REQUEST_SYSTEM
+
+
 def test_the_prompt_describes_all_three_intents():
     from app.agent.prompts import PARSE_REQUEST_SYSTEM
 

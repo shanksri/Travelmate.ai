@@ -117,7 +117,10 @@ form.addEventListener("submit", async (event) => {
     hideStatus();
     if (data.kind === "places") renderPlaces(data.places);
     else if (data.kind === "route") renderRoute(data.route);
-    else renderTrip(data.trip);
+    else {
+      renderTrip(data.trip);
+      renderCityPlaces(data.places_by_city);
+    }
   } catch (err) {
     setStatus("error", err.message || "Something went wrong.");
   } finally {
@@ -376,13 +379,30 @@ function showMapsResult(html) {
   resultEl.innerHTML = html;
 }
 
-function renderPlaces(places) {
-  showMapsResult(`
+function placesCard(places) {
+  return `
     <div class="card">
       <h3>${escapeHtml(places.query)}</h3>
       <p class="places-summary">${renderSummary(places.summary, places.places)}</p>
       ${renderAttribution(places.places.map((p) => p.attribution))}
-    </div>`);
+    </div>`;
+}
+
+function renderPlaces(places) {
+  showMapsResult(placesCard(places));
+}
+
+// A trip that asked for places in each city gets one card per city under the
+// plan. Not part of the saved trip (Google's terms), so a revised version of
+// the plan is shown without them.
+function renderCityPlaces(cities) {
+  if (!cities || !cities.length) return;
+  const cards = cities.map((c) =>
+    c.places
+      ? placesCard(c.places)
+      : `<div class="card"><h3>${escapeHtml(c.city)}</h3><p class="route-warning">Couldn't load places for ${escapeHtml(c.city)}: ${escapeHtml(c.error || "unknown error")}</p></div>`
+  );
+  resultEl.insertAdjacentHTML("beforeend", cards.join(""));
 }
 
 function routeDuration(seconds) {

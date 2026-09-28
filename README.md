@@ -277,6 +277,14 @@ Maps Grounding Lite server (`https://mapstools.googleapis.com/mcp`, key in an
   distance and time by road or on foot, plus a Google Maps directions link.
   No trains, buses or flights, and no turn-by-turn directions.
 
+A trip can ask for places too: "6 day Kerala itinerary, also tell me the best
+places to eat in each city". The parser stores the kind of place on the
+request (`places_per_city: "restaurants"`), every itinerary day names its
+`city`, and once the plan exists `app/agent/assistant.py` runs one Maps
+search per city in parallel (at most 6). The results come back beside the
+trip in the `/ask` answer (`places_by_city`), not inside it, so they're never
+saved with the trip. If one city's search fails, the plan is still returned.
+
 The parser decides which kind a sentence is (`intent`: trip, places or route)
 in the same single call it already makes, so this adds no LLM call. Trips are
 the default when unclear: "5 days in Goa with good seafood" is still a trip.

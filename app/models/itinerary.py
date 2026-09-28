@@ -64,6 +64,9 @@ class TripRequest(BaseModel):
     # explicitly from its checkboxes.
     include_flights: bool = True
     include_hotels: bool = True
+    # What kind of places to look up on Google Maps for each city of the trip
+    # ("restaurants"), when the traveller asked for that alongside the plan.
+    places_per_city: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -109,6 +112,10 @@ class DayPlan(BaseModel):
     day: int = Field(ge=1, description="1-indexed day of the trip.")
     date: date
     summary: str
+    # The one city the day is based in. Used to look up places per city
+    # (app/agent/assistant.py); optional, since trips planned before it
+    # existed don't have it.
+    city: str | None = None
     activities: list[Activity] = Field(default_factory=list)
 
 

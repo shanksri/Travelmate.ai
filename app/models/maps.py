@@ -36,6 +36,16 @@ class PlacesAnswer(BaseModel):
     places: list[PlaceLink]
 
 
+class CityPlaces(BaseModel):
+    """One city's places for a trip that asked for them. `error` is set
+    instead of `places` when that city's search failed — the trip itself is
+    still returned."""
+
+    city: str
+    places: PlacesAnswer | None = None
+    error: str | None = None
+
+
 class RouteAnswer(BaseModel):
     origin: str
     destination: str

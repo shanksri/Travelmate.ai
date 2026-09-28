@@ -47,6 +47,7 @@ class ParsedPrompt(BaseModel):
     intent: Intent = "trip"
     places_query: str | None = None
     travel_mode: TravelMode | None = None
+    places_per_city: str | None = None
 
     destination: str | None = None
     origin: str | None = None
@@ -120,6 +121,7 @@ def _trip_request(parsed: ParsedPrompt, today: date) -> TripRequest:
         interests=parsed.interests,
         pace=parsed.pace,
         notes=parsed.notes,
+        places_per_city=parsed.places_per_city,
     )
 
 

@@ -19,6 +19,10 @@ another ("how long from Madurai to Rameshwaram by road").
 the city in it: "best restaurants in Bhubaneswar". null otherwise.
 - travel_mode: for "route" only, "WALK" if they said walking, else "DRIVE". \
 null otherwise.
+- places_per_city: for "trip" only, when they also ask for places in each \
+city of the trip ("best places to eat in each city", "good cafes wherever we \
+stay"), the kind of place in a few words: "restaurants", "cafes", "street \
+food". null if they didn't ask for that — a food interest alone is not it.
 For "route", put the start in origin and the end in destination.
 
 - destination: where they want to go, as they said it. It can be a city, a \
@@ -43,7 +47,7 @@ infer sensible ones from what they asked for even if not phrased as an \
 - notes: anything else worth passing along, or null.
 
 Respond with a single JSON object with exactly these keys — intent,
-places_query, travel_mode, destination, origin, start_date, end_date,
+places_query, travel_mode, places_per_city, destination, origin, start_date, end_date,
 duration_days, travelers, budget, interests, pace, notes — using null for
 anything not stated. No prose, no markdown fences."""
 
@@ -130,6 +134,7 @@ Respond with JSON matching exactly this shape:
       "day": 1,
       "date": "YYYY-MM-DD",
       "summary": "one line, naming the city if the trip spans more than one",
+      "city": "the one town this day is based in, e.g. 'Munnar'; never a region or 'Departure'",
       "activities": [
         {
           "time": "09:00",
@@ -202,6 +207,7 @@ Respond with JSON matching exactly the same shape you produced originally:
       "day": 1,
       "date": "YYYY-MM-DD",
       "summary": "one line, naming the city if the trip spans more than one",
+      "city": "the one town this day is based in, e.g. 'Munnar'; never a region or 'Departure'",
       "activities": [
         {
           "time": "09:00",
