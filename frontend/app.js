@@ -340,16 +340,19 @@ function renderDay(day) {
 // stored — so these are rendered and forgotten, and the revise box (which
 // only applies to saved trips) stays hidden.
 
+// Each attribution's title is "<place name> - Google Maps"; shown as one
+// "From Google Maps:" line with every source linked.
 function renderAttribution(attributions) {
   const seen = new Map();
   for (const a of attributions) {
-    if (a && a.title && !seen.has(a.title)) seen.set(a.title, a.url);
+    if (!a || !a.title) continue;
+    const name = a.title.replace(/\s*-\s*Google Maps\s*$/, "");
+    if (!seen.has(name)) seen.set(name, a.url);
   }
-  if (!seen.size) seen.set("Google Maps", "https://maps.google.com");
-  const links = [...seen].map(([title, url]) =>
-    url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(title)}</a>` : escapeHtml(title)
+  const links = [...seen].map(([name, url]) =>
+    url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(name)}</a>` : escapeHtml(name)
   );
-  return `<p class="maps-attribution">Results from ${links.join(", ")}</p>`;
+  return `<p class="maps-attribution">From Google Maps${links.length ? `: ${links.join(" · ")}` : ""}</p>`;
 }
 
 // The summary cites places as [0], [1]… — each becomes a numbered link to that
