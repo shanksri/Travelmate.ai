@@ -804,20 +804,93 @@ Verified in the browser with the request intercepted: the box is sent
 unticked by default and ticked when checked. The Maps lookup itself was
 verified live in Step 35.
 
+
+## Phase 10 — Architecture
+
+### Step 37 · Shared MCP sessions, parallel calls (`2b93e5e`, 2026-09-28)
+
+Item #3 of the future plans. Every MCP call used to open its own connection
+and redo the initialize handshake inside a fresh `asyncio.run`.
+
+- **`app/providers/mcp_runtime.py`** holds one long-lived session per server
+  on an event loop in a background thread. Synchronous code, including
+  LangGraph nodes in worker threads, hands it coroutines. Each session lives
+  in its own task, because the SDK's anyio task groups must be entered and
+  exited in the same task.
+- **Recovery:** a failed session is closed, replaced and the call retried
+  once. An `MCPError`, which is the server's own answer, isn't retried.
+  Sessions close when the app shuts down.
+- **Independent calls run at once:** a trip's per-city searches
+  (`search_places_many`) and the outbound and return flight searches.
+
+**Measured on Google Maps** (live, before vs after):
+
+| | Before | After |
+|---|---|---|
+| One places search | 2.6–3.7 s | 1.8–1.9 s once connected |
+| Three searches in a row | 8.9 s | 6.7 s |
+| Three cities (per-city path) | — | 2.4 s, all at once |
+| One route | 1.3 s | 0.3 s |
+
+A single places or route answer on the page still takes about 3 s, because
+the parser's LLM call (~2 s) dominates it. The saving matters where one
+request makes several MCP calls.
+
+**Scope change, agreed in the plan:** the recommendation also said "async
+throughout" (endpoints, OpenAI calls, the graph). The measurements showed
+the win is connection reuse and concurrency, which this delivers. A full
+async conversion wouldn't speed up a single user, since endpoints already
+run in worker threads. It moves to #2, where streaming needs it anyway.
+
+**Bug found:** the test suite's network guard blocked only `httpx2.get/post`,
+but MCP sessions send through `httpx2.AsyncClient`. Three tests reached the
+real Google Maps, spending 3 requests, before the guard was fixed. Tests now
+get an offline MCP runtime that refuses to connect, and
+`httpx2.AsyncClient.send` is blocked too. The sync client isn't blocked:
+Starlette's `TestClient` subclasses `httpx2.Client`, which also corrected a
+wrong comment claiming TestClient used `httpx`.
+
+### Step 38 · Structured outputs (`048a88a`, 2026-09-28)
+
+Item #4. The four JSON calls (parser, itinerary agent, revision router, day
+planner) used JSON mode, which only guarantees *some* JSON object. Each now
+passes its Pydantic model as a strict `json_schema`. A missing, misspelled
+or extra key, or prose around the JSON, can no longer come back. Checks a
+schema can't express (exact trip dates, a change that changed nothing) still
+run, with the same retry-with-feedback.
+
+- `strict_schema()` in `app/agent/llm.py` adapts Pydantic's schema to strict
+  mode: every property required (optional ones stay nullable),
+  `additionalProperties: false`, no `default`s, nothing beside a `$ref`.
+- A structured-output refusal returns `""`, which the existing
+  validation-and-retry path already handles.
+- `TRAVELMATE_MODEL` must now support structured outputs. `gpt-4o` and
+  `gpt-4o-mini` do; `gpt-4-turbo` no longer qualifies.
+
+**Verified live:** OpenAI accepted all four schemas. The parser read 8 of 8
+sentences correctly. A 3-day Jaipur plan was built on the **first attempt**
+with every day's `city` set. A revision ("nonstop outbound, and a houseboat
+on day 3") rebooked the nonstop and changed only day 3.
+
+Seen in passing: with a schema, the parser fills `places_per_city` more
+eagerly (e.g. "interested in food" became `restaurants`). It no longer
+matters, because the Restaurants checkbox decides (Step 36) and the sentence
+only picks the kind.
+
 ---
 
 ## Where things stand
 
 | Area | State |
 |---|---|
-| Agent pipeline | ✅ 5 nodes, parallel flight/hotel, JSON-validated itinerary with retries |
+| Agent pipeline | ✅ 5 nodes, parallel flight/hotel, strict-schema structured outputs, validated itinerary with retries |
 | Persistence | ✅ Postgres, append-only version history per `thread_id` |
 | Revisions | ✅ "Change this plan" box, routed to flights, hotel and/or days; refused whole with a reason when any part cannot be done; `gpt-4o` |
 | Frontend | ✅ Dark theme, free-text prompt, rupee rendering, cheapest/fastest flight table per leg, Flights/Hotels/Restaurants checkboxes, optional date pickers, revise box — no history browser |
 | Travel data | ⚠️ **Flights are real** under `TRAVELMATE_PROVIDER=live` (Google Flights via SerpApi's MCP server, 100 searches/month, cached 6h). Lodging, attractions and weather are **still mock**. The `.env` default is still `mock` |
 | MCP | ✅ Three clients (SerpApi — flights; Google Maps Grounding Lite — places and routes; Tavily — standalone), two servers (AviationStack — now keyless, weather) |
 | Currency | ✅ Rupee-native, with legacy USD trips preserved |
-| Tests | ✅ 264 passing, `ruff` clean |
+| Tests | ✅ 293 passing, `ruff` clean |
 | GitHub | ✅ Pushed to `shanksri/Travelmate.ai` (public) over SSH |
 
 ---
@@ -837,9 +910,9 @@ to a minute.
 | # | Plan | Why | Status |
 |---|---|---|---|
 | 1 | **Stream progress and results.** A plan request returns a job id at once; the server streams events ("flights found", then each day as it's written, then restaurants) over SSE. | Total time barely changes, but the first content appears in seconds instead of ~25 s, and closing the tab no longer loses the work. | Planned, with #2 |
-| 2 | **One orchestrator.** /ask becomes a graph with a routing step, then trip, places or route branches. Revisions become a small graph of their own. Per-city places become a LangGraph fan-out. | Parallelism, tracing and streaming in one place. Budget check and guardrails slot in as extra steps. | Planned |
-| 3 | **Keep MCP connections open; run parallel work concurrently.** One long-lived session per MCP server, reused across calls, instead of a new connection and handshake every time. | Every Maps and flight call pays the connection cost today. | **In progress** |
-| 4 | **Structured outputs.** Every JSON call passes its exact schema to OpenAI (`json_schema`, strict), instead of JSON mode, then hand checks, then retry. | Several fixed bugs were format failures, and each retry costs a full LLM call. | **In progress** |
+| 2 | **One orchestrator.** /ask becomes a graph with a routing step, then trip, places or route branches. Revisions become a small graph of their own. Per-city places become a LangGraph fan-out. | Parallelism, tracing and streaming in one place. Budget check and guardrails slot in as extra steps. Includes making endpoints, LLM calls and the graph async, moved here from #3. | Planned |
+| 3 | **Keep MCP connections open; run parallel work concurrently.** One long-lived session per MCP server, reused across calls, instead of a new connection and handshake every time. | Every Maps and flight call paid the connection cost. | ✅ Done: Step 37. The async-throughout part moved to #2 |
+| 4 | **Structured outputs.** Every JSON call passes its exact schema to OpenAI (`json_schema`, strict), instead of JSON mode, then hand checks, then retry. | Several fixed bugs were format failures, and each retry costs a full LLM call. | ✅ Done: Step 38 |
 | 5 | **Evaluation suite and tracing.** The live checks done by hand become a fixed prompt set with expected outcomes, run against the real model on demand. Examples: "Ladakh → declined", "Kerala and Tamil Nadu → one destination", "houseboat → only day 3 changed". LangSmith tracing is already configured in `.env` but not connected. | Prompt and model changes stop being guesswork; per-plan cost becomes visible. | Planned, before the next big prompt change |
 | 6 | **One tools layer.** Flights, hotels, places, routes and weather each get an interface with sample and live implementations chosen by config. | Real hotels and real weather become small changes. The weather MCP server built in Step 19 is still unused by the planner. | Planned, with real hotels |
 
