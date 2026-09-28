@@ -92,12 +92,37 @@ def plan_trip_from_prompt(
     settings = settings or get_settings()
     llm = llm or _build_llm(settings)
 
+    return plan_parsed_trip(
+        parse_trip_prompt(prompt, llm),
+        include_flights=include_flights,
+        include_hotels=include_hotels,
+        start_date=start_date,
+        end_date=end_date,
+        llm=llm,
+        provider=provider,
+        settings=settings,
+    )
+
+
+def plan_parsed_trip(
+    parsed: TripRequest,
+    *,
+    include_flights: bool,
+    include_hotels: bool,
+    start_date: date | None,
+    end_date: date | None,
+    llm: LLM,
+    provider: TravelProvider | None = None,
+    settings: Settings | None = None,
+) -> PlannedTrip:
+    """Apply the page's own choices to a request parsed from free text, then
+    plan it. Shared by `plan_trip_from_prompt` and app/agent/assistant.py."""
     overrides: dict = {"include_flights": include_flights, "include_hotels": include_hotels}
     if start_date and end_date:
         overrides |= {"start_date": start_date, "end_date": end_date}
     # Re-validated rather than model_copy'd, so picked dates go through the
     # same ordering and length checks as parsed ones.
-    request = TripRequest.model_validate(parse_trip_prompt(prompt, llm).model_dump() | overrides)
+    request = TripRequest.model_validate(parsed.model_dump() | overrides)
     # Without this, a missing destination falls through to resolve_destination,
     # which picks from the provider's sample list — "Varanasi to Kerala and
     # Tamil Nadu" came back as five days in Chiang Mai. Asking is better than

@@ -4,7 +4,7 @@ from datetime import date
 import pytest
 from conftest import FakeLLM
 
-from app.agent.prompt_parser import PromptParseError, parse_trip_prompt
+from app.agent.prompt_parser import PromptParseError, interpret_prompt, parse_trip_prompt
 
 TODAY = date(2026, 9, 15)
 
@@ -138,3 +138,103 @@ def test_the_prompt_counts_several_regions_as_one_destination():
 
     assert '"Kerala and Tamil Nadu" is the destination' in PARSE_REQUEST_SYSTEM
     assert "null only if they named no place" in PARSE_REQUEST_SYSTEM
+
+
+# --- telling trips, places and routes apart ----------------------------------
+
+
+def test_a_places_request_is_interpreted_as_places():
+    llm = FakeLLM(
+        responses=[
+            _payload(
+                intent="places",
+                places_query="best restaurants in Bhubaneswar",
+                destination="Bhubaneswar",
+            )
+        ]
+    )
+
+    result = interpret_prompt("show me best places to eat in bhuvneshwar", llm, today=TODAY)
+
+    assert result.intent == "places"
+    assert result.parsed.places_query == "best restaurants in Bhubaneswar"
+    assert result.trip is None
+
+
+def test_a_route_request_is_interpreted_as_a_route():
+    llm = FakeLLM(
+        responses=[
+            _payload(
+                intent="route", origin="Madurai", destination="Rameswaram", travel_mode="DRIVE"
+            )
+        ]
+    )
+
+    result = interpret_prompt("how far is rameshwaram from madurai", llm, today=TODAY)
+
+    assert result.intent == "route"
+    assert (result.parsed.origin, result.parsed.destination) == ("Madurai", "Rameswaram")
+    assert result.parsed.travel_mode == "DRIVE"
+    assert result.trip is None
+
+
+def test_a_trip_request_still_comes_back_as_a_trip():
+    llm = FakeLLM(responses=[_payload(intent="trip", destination="Goa", duration_days=4)])
+
+    result = interpret_prompt("4 days in Goa", llm, today=TODAY)
+
+    assert result.intent == "trip"
+    assert result.trip.destination == "Goa"
+    assert result.trip.nights == 3
+
+
+def test_a_missing_or_null_intent_means_a_trip():
+    """Everything the parser returned before intents existed was a trip."""
+    llm = FakeLLM(
+        responses=[_payload(destination="Goa"), _payload(intent=None, destination="Goa")]
+    )
+
+    assert interpret_prompt("Goa", llm, today=TODAY).intent == "trip"
+    assert interpret_prompt("Goa", llm, today=TODAY).intent == "trip"
+
+
+def test_places_without_a_query_is_retried_with_feedback():
+    llm = FakeLLM(
+        responses=[
+            _payload(intent="places", places_query=None),
+            _payload(intent="places", places_query="cafes in Puri"),
+        ]
+    )
+
+    result = interpret_prompt("cafes in puri", llm, today=TODAY)
+
+    assert result.parsed.places_query == "cafes in Puri"
+    assert "places_query is null" in llm.calls[1]["user"]
+
+
+def test_a_route_without_both_ends_is_retried_then_given_up_on():
+    llm = FakeLLM(responses=[_payload(intent="route", origin="Madurai")] * 2)
+
+    with pytest.raises(PromptParseError, match="origin or destination is null"):
+        interpret_prompt("how far to madurai", llm, today=TODAY, max_retries=1)
+
+
+def test_parse_trip_prompt_always_plans_a_trip():
+    """POST /trips/plan-from-prompt and the CLI only plan trips, so a sentence
+    the parser reads as a places search still becomes a trip there."""
+    llm = FakeLLM(
+        responses=[
+            _payload(intent="places", places_query="restaurants in Puri", destination="Puri")
+        ]
+    )
+
+    request = parse_trip_prompt("restaurants in puri", llm, today=TODAY)
+
+    assert request.destination == "Puri"
+
+
+def test_the_prompt_describes_all_three_intents():
+    from app.agent.prompts import PARSE_REQUEST_SYSTEM
+
+    for phrase in ('"trip"', '"places"', '"route"', "places_query", "travel_mode"):
+        assert phrase in PARSE_REQUEST_SYSTEM

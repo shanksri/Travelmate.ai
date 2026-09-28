@@ -348,3 +348,95 @@ def test_history_returns_every_version_oldest_first(client, trip_request):
 
 def test_history_on_an_unknown_thread_is_a_404(client):
     assert client.get("/trips/nope/history").status_code == 404
+
+
+# --- POST /ask ---------------------------------------------------------------
+
+
+def test_ask_returns_a_places_answer_and_saves_nothing(client, monkeypatch):
+    from app.agent.assistant import Answer
+    from app.models.maps import PlacesAnswer
+
+    before = len(get_store().list_all())
+    monkeypatch.setattr(
+        "app.api.routes.ask.answer_prompt",
+        lambda prompt, **kw: Answer(
+            kind="places", places=PlacesAnswer(query="q", summary="s", places=[])
+        ),
+    )
+
+    response = client.post("/ask", json={"prompt": "best places to eat in Puri"})
+
+    assert response.status_code == 200
+    assert response.json()["kind"] == "places"
+    assert response.json()["places"]["summary"] == "s"
+    assert len(get_store().list_all()) == before
+
+
+def test_ask_saves_a_planned_trip(client, trip_request, monkeypatch):
+    from app.agent.assistant import Answer
+
+    trip = sample_planned_trip(trip_request, trip_id="ask-trip")
+    monkeypatch.setattr(
+        "app.api.routes.ask.answer_prompt", lambda prompt, **kw: Answer(kind="trip", trip=trip)
+    )
+
+    response = client.post("/ask", json={"prompt": "4 days in Lisbon"})
+
+    assert response.json()["kind"] == "trip"
+    assert client.get("/trips/ask-trip").status_code == 200
+
+
+def test_ask_passes_the_pages_choices_through(client, trip_request, monkeypatch):
+    from app.agent.assistant import Answer
+
+    seen = {}
+
+    def fake(prompt, **kwargs):
+        seen.update(kwargs)
+        return Answer(kind="trip", trip=sample_planned_trip(trip_request, trip_id="ask-2"))
+
+    monkeypatch.setattr("app.api.routes.ask.answer_prompt", fake)
+
+    client.post(
+        "/ask",
+        json={
+            "prompt": "Goa",
+            "include_flights": True,
+            "include_hotels": False,
+            "start_date": _in_days(5),
+            "end_date": _in_days(8),
+        },
+    )
+
+    assert seen["include_flights"] is True
+    assert seen["include_hotels"] is False
+    assert seen["start_date"] == date.fromisoformat(_in_days(5))
+
+
+def test_ask_turns_a_maps_failure_into_a_502(client, monkeypatch):
+    from app.providers.google_maps import GoogleMapsError
+
+    def boom(prompt, **kwargs):
+        raise GoogleMapsError("Google Maps refused the request.")
+
+    monkeypatch.setattr("app.api.routes.ask.answer_prompt", boom)
+
+    response = client.post("/ask", json={"prompt": "cafes in Puri"})
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Google Maps: Google Maps refused the request."
+
+
+def test_ask_turns_a_parse_failure_into_a_422(client, monkeypatch):
+    from app.agent.prompt_parser import PromptParseError
+
+    def boom(prompt, **kwargs):
+        raise PromptParseError("no destination was named.")
+
+    monkeypatch.setattr("app.api.routes.ask.answer_prompt", boom)
+
+    response = client.post("/ask", json={"prompt": "plan me something"})
+
+    assert response.status_code == 422
+    assert "no destination was named" in response.json()["detail"]

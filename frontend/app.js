@@ -92,11 +92,13 @@ form.addEventListener("submit", async (event) => {
   submitButton.disabled = true;
   setStatus(
     "loading",
-    "Planning your trip — this makes several real OpenAI calls and can take 30-60 seconds..."
+    "Working on it — a place search takes a few seconds; planning a trip makes several " +
+      "OpenAI calls and can take 30-60 seconds..."
   );
 
   try {
-    const response = await fetch("/trips/plan-from-prompt", {
+    // /ask lets the sentence decide: a trip to plan, places to find, or a route.
+    const response = await fetch("/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -113,7 +115,9 @@ form.addEventListener("submit", async (event) => {
     }
 
     hideStatus();
-    renderTrip(data.trip);
+    if (data.kind === "places") renderPlaces(data.places);
+    else if (data.kind === "route") renderRoute(data.route);
+    else renderTrip(data.trip);
   } catch (err) {
     setStatus("error", err.message || "Something went wrong.");
   } finally {
@@ -329,6 +333,76 @@ function renderDay(day) {
       <h4>Day ${day.day} — ${escapeHtml(day.date)}: ${escapeHtml(day.summary)}</h4>
       ${day.activities.map(renderActivity).join("")}
     </div>`;
+}
+
+// --- Google Maps answers ------------------------------------------------------
+// Google's terms: every result shows its attribution, and results aren't
+// stored — so these are rendered and forgotten, and the revise box (which
+// only applies to saved trips) stays hidden.
+
+function renderAttribution(attributions) {
+  const seen = new Map();
+  for (const a of attributions) {
+    if (a && a.title && !seen.has(a.title)) seen.set(a.title, a.url);
+  }
+  if (!seen.size) seen.set("Google Maps", "https://maps.google.com");
+  const links = [...seen].map(([title, url]) =>
+    url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(title)}</a>` : escapeHtml(title)
+  );
+  return `<p class="maps-attribution">Results from ${links.join(", ")}</p>`;
+}
+
+// The summary cites places as [0], [1]… — each becomes a numbered link to that
+// place on Google Maps. **bold** is the one bit of markdown it uses.
+function renderSummary(summary, places) {
+  const byIndex = new Map(places.map((p) => [p.index, p]));
+  return escapeHtml(summary)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\[(\d+)\]/g, (match, n) => {
+      const place = byIndex.get(Number(n));
+      if (!place || !place.place_url) return "";
+      return `<a class="place-cite" href="${escapeHtml(place.place_url)}" target="_blank" rel="noopener" title="Open in Google Maps">${Number(n) + 1}</a>`;
+    })
+    .replace(/\n/g, "<br>");
+}
+
+function showMapsResult(html) {
+  reviseCard.hidden = true;
+  currentThreadId = null;
+  resultEl.hidden = false;
+  resultEl.innerHTML = html;
+}
+
+function renderPlaces(places) {
+  showMapsResult(`
+    <div class="card">
+      <h3>${escapeHtml(places.query)}</h3>
+      <p class="places-summary">${renderSummary(places.summary, places.places)}</p>
+      ${renderAttribution(places.places.map((p) => p.attribution))}
+    </div>`);
+}
+
+function routeDuration(seconds) {
+  if (seconds === null || seconds === undefined) return "—";
+  const minutes = Math.round(seconds / 60);
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return h ? (m ? `${h} h ${m} min` : `${h} h`) : `${m} min`;
+}
+
+function renderRoute(route) {
+  const km = route.distance_meters === null || route.distance_meters === undefined
+    ? "—"
+    : `${(route.distance_meters / 1000).toLocaleString("en-IN", { maximumFractionDigits: 0 })} km`;
+  const walking = route.travel_mode === "WALK";
+  showMapsResult(`
+    <div class="card">
+      <h3>${escapeHtml(route.origin)} → ${escapeHtml(route.destination)}</h3>
+      <p class="route-line"><strong>${km}</strong> · about <strong>${routeDuration(route.duration_seconds)}</strong> ${walking ? "on foot" : "by road"}</p>
+      ${walking ? '<p class="route-warning">Walking routes are in beta and may be missing clear sidewalks or pedestrian paths.</p>' : ""}
+      <p><a href="${escapeHtml(route.maps_url)}" target="_blank" rel="noopener">Open directions in Google Maps</a></p>
+      ${renderAttribution([route.attribution])}
+    </div>`);
 }
 
 function renderTrip(trip) {

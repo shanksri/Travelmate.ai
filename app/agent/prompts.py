@@ -3,10 +3,23 @@
 from app.models.itinerary import TripRequest
 
 PARSE_REQUEST_SYSTEM = """\
-You turn a traveller's one-sentence trip request into structured trip \
-parameters. Extract only what's actually stated or clearly implied; leave \
-anything else null so the system can apply a sensible, documented default —
-do not guess a specific date or number that was never mentioned.
+You turn a traveller's one-sentence request into structured parameters. \
+Extract only what's actually stated or clearly implied; leave anything else \
+null so the system can apply a sensible, documented default — do not guess a \
+specific date or number that was never mentioned.
+
+First decide what kind of request it is:
+- intent: "trip" when they want a trip or itinerary planned — this is the \
+default whenever it's unclear. "places" when they only want places found in \
+a city — restaurants, cafes, street food, bars, markets, things to see — and \
+no trip planned ("best places to eat in Bhubaneswar"). "route" when they only \
+want to know how far it is, or how long it takes, to get from one place to \
+another ("how long from Madurai to Rameshwaram by road").
+- places_query: for "places" only, the search to run on Google Maps, with \
+the city in it: "best restaurants in Bhubaneswar". null otherwise.
+- travel_mode: for "route" only, "WALK" if they said walking, else "DRIVE". \
+null otherwise.
+For "route", put the start in origin and the end in destination.
 
 - destination: where they want to go, as they said it. It can be a city, a \
 state, a region or a country, or several of them together — "Kerala and \
@@ -29,10 +42,10 @@ infer sensible ones from what they asked for even if not phrased as an \
 - pace: "relaxed", "balanced", or "packed". Default "balanced" if not implied.
 - notes: anything else worth passing along, or null.
 
-Respond with a single JSON object with exactly these keys — destination,
-origin, start_date, end_date, duration_days, travelers, budget,
-interests, pace, notes — using null for anything not stated. No prose, no
-markdown fences."""
+Respond with a single JSON object with exactly these keys — intent,
+places_query, travel_mode, destination, origin, start_date, end_date,
+duration_days, travelers, budget, interests, pace, notes — using null for
+anything not stated. No prose, no markdown fences."""
 
 FLIGHT_AGENT_SYSTEM = """\
 You are the flight-search agent in a trip-planning pipeline. You are told \

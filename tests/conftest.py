@@ -181,9 +181,16 @@ class FakeMCPToolResult:
     used to mock `app.providers.tavily_mcp._call_tool` without a real
     server round trip."""
 
-    def __init__(self, json_data: dict | None = None, *, is_error: bool = False) -> None:
+    def __init__(
+        self,
+        json_data: dict | None = None,
+        *,
+        is_error: bool = False,
+        structured: dict | None = None,
+    ) -> None:
         self.is_error = is_error
         self.content = [FakeMCPTextBlock(json.dumps(json_data))] if json_data is not None else []
+        self.structured_content = structured
 
 
 class FakeLLM:

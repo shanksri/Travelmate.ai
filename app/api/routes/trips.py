@@ -16,6 +16,7 @@ from app.api.schemas import (
     TripListResponse,
 )
 from app.models.itinerary import PlannedTrip
+from app.providers.google_maps import GoogleMapsError
 from app.store import get_store
 
 logger = logging.getLogger(__name__)
@@ -24,10 +25,18 @@ router = APIRouter(prefix="/trips", tags=["trips"])
 
 
 def _run(planning_call: Callable[[], PlannedTrip]) -> PlanTripResponse:
-    """Shared plumbing for both entry points below: run the call, translate
+    """Shared plumbing for the entry points below: run the call, translate
     the ways it can fail into HTTP errors, save what succeeds."""
+    trip = run_translating_errors(planning_call)
+    get_store().save(trip)
+    return PlanTripResponse(trip=trip)
+
+
+def run_translating_errors[T](call: Callable[[], T]) -> T:
+    """Run a planning, revising or answering call, turning the ways it can
+    fail into HTTP errors. Also used by app/api/routes/ask.py."""
     try:
-        trip = planning_call()
+        return call()
     except openai.AuthenticationError as exc:
         logger.warning("openai auth failed: %s", exc)
         raise HTTPException(
@@ -63,9 +72,9 @@ def _run(planning_call: Callable[[], PlannedTrip]) -> PlanTripResponse:
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY, f"The change could not be applied: {exc}"
         ) from exc
-
-    get_store().save(trip)
-    return PlanTripResponse(trip=trip)
+    except GoogleMapsError as exc:
+        logger.error("google maps failed: %s", exc)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Google Maps: {exc}") from exc
 
 
 @router.post("/plan", response_model=PlanTripResponse)

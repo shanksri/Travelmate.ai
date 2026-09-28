@@ -7,13 +7,16 @@ stays exact and testable without depending on model behaviour.
 """
 
 import json
+from dataclasses import dataclass
 from datetime import date, timedelta
+from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from app.agent.llm import LLM
 from app.agent.prompts import PARSE_REQUEST_SYSTEM
 from app.models.itinerary import Pace, TripRequest
+from app.models.maps import TravelMode
 
 # If the traveller gave a length ("5 days") but no start date, assume the
 # trip starts this far out. If they gave neither, assume this length too.
@@ -32,9 +35,18 @@ class PromptParseError(ValueError):
         self.feedback = feedback
 
 
+Intent = Literal["trip", "places", "route"]
+
+
 class ParsedPrompt(BaseModel):
     """What the LLM extracts — deliberately looser than `TripRequest`: dates
     may be partial (a duration instead of an end date) or entirely absent."""
+
+    # "trip" is the default whenever the model leaves it out: everything that
+    # predates intents was a trip.
+    intent: Intent = "trip"
+    places_query: str | None = None
+    travel_mode: TravelMode | None = None
 
     destination: str | None = None
     origin: str | None = None
@@ -58,7 +70,12 @@ class ParsedPrompt(BaseModel):
         omitted for exactly these three."""
         if not isinstance(data, dict):
             return data
-        defaults: dict[str, object] = {"travelers": 1, "interests": [], "pace": "balanced"}
+        defaults: dict[str, object] = {
+            "travelers": 1,
+            "interests": [],
+            "pace": "balanced",
+            "intent": "trip",
+        }
         return {key: (defaults.get(key) if key in defaults and value is None else value)
                 for key, value in data.items()}
 
@@ -81,17 +98,43 @@ def _resolve_dates(parsed: ParsedPrompt, today: date) -> tuple[date, date]:
     return start, start + timedelta(days=duration - 1)
 
 
-def parse_trip_prompt(
-    prompt: str,
-    llm: LLM,
-    *,
-    today: date | None = None,
-    max_retries: int = 1,
-) -> TripRequest:
-    """Parse one free-text request into a `TripRequest`, retrying once on a
-    malformed or unusable response — the same feedback-loop shape as the
-    itinerary agent's JSON validation."""
-    today = today or date.today()
+@dataclass(frozen=True)
+class Interpretation:
+    """What one free-text request turned out to be. `trip` is set exactly
+    when `intent` is "trip"; places and routes are answered from `parsed`."""
+
+    intent: Intent
+    parsed: ParsedPrompt
+    trip: TripRequest | None = None
+
+
+def _trip_request(parsed: ParsedPrompt, today: date) -> TripRequest:
+    start_date, end_date = _resolve_dates(parsed, today)
+    return TripRequest(
+        start_date=start_date,
+        end_date=end_date,
+        travelers=parsed.travelers,
+        destination=parsed.destination,
+        origin=parsed.origin,
+        budget=parsed.budget,
+        interests=parsed.interests,
+        pace=parsed.pace,
+        notes=parsed.notes,
+    )
+
+
+def _missing_for(parsed: ParsedPrompt) -> str | None:
+    """Feedback when a places/route answer lacks what it needs to be run."""
+    if parsed.intent == "places" and not parsed.places_query:
+        return 'intent is "places" but places_query is null.'
+    if parsed.intent == "route" and not (parsed.origin and parsed.destination):
+        return 'intent is "route" but origin or destination is null.'
+    return None
+
+
+def _interpret(
+    prompt: str, llm: LLM, *, today: date, max_retries: int, always_trip: bool
+) -> Interpretation:
     feedback = ""
     last_error = ""
 
@@ -104,24 +147,57 @@ def parse_trip_prompt(
         try:
             parsed = ParsedPrompt.model_validate(json.loads(raw))
         except (json.JSONDecodeError, ValidationError) as exc:
-            feedback = last_error = f"could not parse that as trip parameters: {exc}"
+            feedback = last_error = f"could not parse that as request parameters: {exc}"
             continue
 
-        start_date, end_date = _resolve_dates(parsed, today)
+        if not always_trip and parsed.intent != "trip":
+            missing = _missing_for(parsed)
+            if missing:
+                feedback = last_error = missing
+                continue
+            return Interpretation(intent=parsed.intent, parsed=parsed)
+
         try:
-            return TripRequest(
-                start_date=start_date,
-                end_date=end_date,
-                travelers=parsed.travelers,
-                destination=parsed.destination,
-                origin=parsed.origin,
-                budget=parsed.budget,
-                interests=parsed.interests,
-                pace=parsed.pace,
-                notes=parsed.notes,
-            )
+            return Interpretation(intent="trip", parsed=parsed, trip=_trip_request(parsed, today))
         except ValidationError as exc:
             feedback = last_error = f"those trip parameters were not valid: {exc}"
             continue
 
-    raise PromptParseError(f"couldn't understand that trip request: {last_error}")
+    raise PromptParseError(f"couldn't understand that request: {last_error}")
+
+
+def interpret_prompt(
+    prompt: str,
+    llm: LLM,
+    *,
+    today: date | None = None,
+    max_retries: int = 1,
+) -> Interpretation:
+    """Work out whether one free-text request is a trip to plan, places to
+    find, or a route to measure — and extract what that needs. One LLM call,
+    retried once on a malformed or unusable response."""
+    return _interpret(
+        prompt, llm, today=today or date.today(), max_retries=max_retries, always_trip=False
+    )
+
+
+def parse_trip_prompt(
+    prompt: str,
+    llm: LLM,
+    *,
+    today: date | None = None,
+    max_retries: int = 1,
+) -> TripRequest:
+    """Parse one free-text request into a `TripRequest`, retrying once on a
+    malformed or unusable response — the same feedback-loop shape as the
+    itinerary agent's JSON validation.
+
+    Always a trip, whatever the sentence reads as: this is for callers that
+    only plan (POST /trips/plan-from-prompt, the CLI). `interpret_prompt` is
+    the one that tells trips, places and routes apart.
+    """
+    interpretation = _interpret(
+        prompt, llm, today=today or date.today(), max_retries=max_retries, always_trip=True
+    )
+    assert interpretation.trip is not None  # always_trip guarantees it
+    return interpretation.trip

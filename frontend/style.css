@@ -386,6 +386,45 @@ button[type="submit"]:not(:disabled):hover {
   font-variant-numeric: tabular-nums;
 }
 
+.places-summary,
+.route-line {
+  margin: 0 0 0.9rem;
+  color: #d7dbea;
+  line-height: 1.6;
+}
+
+.place-cite {
+  display: inline-block;
+  min-width: 1.2rem;
+  margin: 0 0.1rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: rgba(79, 109, 245, 0.18);
+  color: #a9b8ff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-align: center;
+  text-decoration: none;
+  vertical-align: super;
+}
+
+.card a {
+  color: #a9b8ff;
+}
+
+.route-warning {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.maps-attribution {
+  margin: 0;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
 .hotel-list {
   list-style: none;
   margin: 0;

@@ -133,10 +133,11 @@ uvicorn app.main:app --reload
 
 | Method | Path | What it does |
 |---|---|---|
-| `GET` | `/` | The frontend — plan a trip from one sentence, see the result rendered as a page |
+| `GET` | `/` | The frontend — plan a trip, find places or measure a route from one sentence |
 | `GET` | `/health` | Liveness, plus the configured model, provider and store |
+| `POST` | `/ask` | One sentence → a planned trip, places from Google Maps, or a route — whichever it asks for. What the frontend calls |
 | `POST` | `/trips/plan` | Plan a trip from structured parameters; returns the stored `PlannedTrip` |
-| `POST` | `/trips/plan-from-prompt` | Plan a trip from one free-text sentence — what the frontend calls |
+| `POST` | `/trips/plan-from-prompt` | Plan a trip from one free-text sentence, whatever it asks for |
 | `POST` | `/trips/{thread_id}/revise` | Apply one change to an existing trip; saves and returns the next version |
 | `GET` | `/trips/{thread_id}/history` | Every version of one trip, oldest first |
 | `GET` | `/trips` | Every trip planned since the process started |
@@ -221,6 +222,8 @@ loop for a tea house while leaving the newly added day-3 activity in place.
 | `app/agent/prompt_parser.py` | Turns one free-text sentence into a `TripRequest` — what powers the frontend's single prompt box |
 | `app/agent/planner.py` | `plan_trip()` / `plan_trip_from_prompt()` — build the graph, invoke it, map the result to a `PlannedTrip` |
 | `app/agent/reviser.py` | `revise_trip()` — routes one requested change to the flights, hotel and/or day plan of an existing trip, and applies only those |
+| `app/agent/assistant.py` | `answer_prompt()` — behind `POST /ask`: plans a trip, or answers a places or route request from Google Maps |
+| `app/providers/google_maps.py` | MCP client to Google's Maps Grounding Lite: `search_places`, `compute_route` |
 | `app/providers/` | The travel data seam (`TravelProvider` Protocol) |
 | `app/models/itinerary.py` | `TripRequest`, `Itinerary`, `PlannedTrip` |
 | `app/api/` | FastAPI routes and wire schemas |
@@ -258,6 +261,34 @@ no third-party keys and the tests never touch a network.
 `TRAVELMATE_PROVIDER=live` serves **live flight fares from Google Flights**,
 via SerpApi's hosted MCP server, and mock data for everything else — lodging,
 attractions and weather still have no real source. Needs `SERPAPI_API_KEY`.
+
+### Places and routes (Google Maps)
+
+`POST /ask` answers two kinds of request besides trips, using
+`app/providers/google_maps.py`, an **MCP client** to Google's official hosted
+Maps Grounding Lite server (`https://mapstools.googleapis.com/mcp`, key in an
+`X-Goog-Api-Key` header, `GOOGLE_MAPS_API_KEY`):
+
+- **Places**: "best places to eat in Bhubaneswar" → `search_places`. Google
+  returns a written summary citing places as `[0]`, `[1]`…, plus a Maps link
+  per place. The page turns each citation into a numbered link. There are no
+  name, rating or price fields; those live in the summary.
+- **Routes**: "how far is Rameshwaram from Madurai" → `compute_routes`:
+  distance and time by road or on foot, plus a Google Maps directions link.
+  No trains, buses or flights, and no turn-by-turn directions.
+
+The parser decides which kind a sentence is (`intent`: trip, places or route)
+in the same single call it already makes, so this adds no LLM call. Trips are
+the default when unclear: "5 days in Goa with good seafood" is still a trip.
+Places and routes make no further LLM calls at all.
+
+Google's terms: results **must not be stored or cached**, and their
+attribution must be shown. So `/ask` saves only trips, nothing is cached, and
+the page shows "Results from Google Maps" under every answer, plus Google's
+beta warning on walking routes. 10,000 free requests a month; each answer is
+one. The Google Cloud project needs the "Maps Grounding Lite API" enabled and
+billing set up. Without that, the MCP SDK reports only a bare JSON-RPC
+`-32603`, which the client turns into a message saying what to check.
 
 ### Live flight fares (`TRAVELMATE_PROVIDER=live`)
 
