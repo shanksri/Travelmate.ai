@@ -29,6 +29,7 @@ def ask(payload: PlanFromPromptRequest) -> Answer:
                 payload.prompt,
                 include_flights=payload.include_flights,
                 include_hotels=payload.include_hotels,
+                include_restaurants=payload.include_restaurants,
                 start_date=payload.start_date,
                 end_date=payload.end_date,
             )

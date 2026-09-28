@@ -88,13 +88,16 @@ def _trip_with_cities(trip_request, cities, *, places_per_city=None):
 
 @pytest.fixture
 def fake_plan(monkeypatch):
-    """Stops answer_prompt at the planner, returning `seen["trip"]`."""
+    """Stops answer_prompt at the planner, returning `seen["trip"]` with the
+    `places_per_city` it was asked to plan with — as the real one records."""
     seen = {}
 
     def plan(parsed, **kwargs):
         seen["parsed"] = parsed
         seen.update(kwargs)
-        return seen["trip"]
+        trip = seen["trip"]
+        request = trip.request.model_copy(update={"places_per_city": kwargs["places_per_city"]})
+        return trip.model_copy(update={"request": request})
 
     monkeypatch.setattr(assistant, "plan_parsed_trip", plan)
     return seen
@@ -117,7 +120,7 @@ def test_a_trip_request_is_planned_with_the_pages_choices(
     )
 
     assert answer.kind == "trip"
-    assert answer.trip is fake_plan["trip"]
+    assert answer.trip.id == fake_plan["trip"].id
     assert fake_plan["parsed"].destination == "Goa"
     assert fake_plan["include_flights"] is False
     assert fake_plan["start_date"] == date(2027, 1, 10)
@@ -141,12 +144,13 @@ def test_a_trip_that_asks_for_places_gets_one_search_per_city(
         ["Kochi", "Kochi", "Alleppey", "Munnar", "munnar", None],
         places_per_city="restaurants",
     )
-    llm = _parse_llm(intent="trip", destination="Kerala", places_per_city="restaurants")
+    llm = _parse_llm(intent="trip", destination="Kerala")
 
     answer = answer_prompt(
-        "6 day kerala itinerary, best places to eat in each city", llm=llm, settings=settings
+        "6 day kerala itinerary", include_restaurants=True, llm=llm, settings=settings
     )
 
+    assert fake_plan["places_per_city"] == "restaurants"
     assert [c.city for c in answer.places_by_city] == ["Kochi", "Alleppey", "Munnar"]
     assert sorted(queries) == sorted(
         ["best restaurants in Kochi", "best restaurants in Alleppey", "best restaurants in Munnar"]
@@ -168,13 +172,55 @@ def test_one_city_failing_still_returns_the_trip(fake_plan, monkeypatch, trip_re
     )
 
     answer = answer_prompt(
-        "kerala, places to eat in each city", llm=_parse_llm(), settings=settings
+        "kerala", include_restaurants=True, llm=_parse_llm(), settings=settings
     )
 
-    assert answer.trip is fake_plan["trip"]
+    assert answer.trip.id == fake_plan["trip"].id
     kochi, munnar = answer.places_by_city
     assert kochi.places is not None and kochi.error is None
     assert munnar.places is None and munnar.error == "quota exceeded"
+
+
+def test_without_the_restaurants_box_nothing_is_looked_up(
+    fake_plan, fake_maps, trip_request, settings
+):
+    """Only when asked, like flights and hotels — even if the sentence
+    mentions places to eat."""
+    fake_plan["trip"] = _trip_with_cities(trip_request, ["Kochi", "Munnar"])
+    llm = _parse_llm(intent="trip", destination="Kerala", places_per_city="restaurants")
+
+    answer = answer_prompt(
+        "6 day kerala itinerary, also the best places to eat in each city",
+        llm=llm,
+        settings=settings,
+    )
+
+    assert fake_plan["places_per_city"] is None
+    assert answer.places_by_city == []
+    assert "places" not in fake_maps
+
+
+def test_the_sentence_can_choose_the_kind_of_place(
+    fake_plan, monkeypatch, trip_request, settings
+):
+    queries = []
+
+    def search_places(query):
+        queries.append(query)
+        return PlacesAnswer(query=query, summary="s", places=[])
+
+    monkeypatch.setattr(assistant.google_maps, "search_places", search_places)
+    fake_plan["trip"] = _trip_with_cities(trip_request, ["Kolkata"])
+    llm = _parse_llm(intent="trip", destination="Kolkata", places_per_city="street food")
+
+    answer_prompt(
+        "3 days in kolkata, street food in each area",
+        include_restaurants=True,
+        llm=llm,
+        settings=settings,
+    )
+
+    assert queries == ["best street food in Kolkata"]
 
 
 def test_cities_fall_back_to_the_destination_when_days_have_none(trip_request):

@@ -83,6 +83,7 @@ def answer_prompt(
     *,
     include_flights: bool = True,
     include_hotels: bool = True,
+    include_restaurants: bool = False,
     start_date: date | None = None,
     end_date: date | None = None,
     llm: LLM | None = None,
@@ -90,7 +91,12 @@ def answer_prompt(
     settings: Settings | None = None,
 ) -> Answer:
     """The checkboxes and picked dates only apply when it turns out to be a
-    trip; a places search or a route ignores them."""
+    trip; a places search or a route ignores them.
+
+    Places per city are looked up only when `include_restaurants` is on,
+    like flights and hotels only when theirs are. The sentence can still
+    pick the kind ("street food in each city"); without one it's restaurants.
+    """
     if (start_date is None) != (end_date is None):
         raise ValueError("give both start_date and end_date, or neither")
 
@@ -118,6 +124,7 @@ def answer_prompt(
         interpretation.trip,
         include_flights=include_flights,
         include_hotels=include_hotels,
+        places_per_city=(parsed.places_per_city or "restaurants") if include_restaurants else None,
         start_date=start_date,
         end_date=end_date,
         llm=llm,

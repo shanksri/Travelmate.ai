@@ -112,12 +112,22 @@ def plan_parsed_trip(
     start_date: date | None,
     end_date: date | None,
     llm: LLM,
+    places_per_city: str | None = None,
     provider: TravelProvider | None = None,
     settings: Settings | None = None,
 ) -> PlannedTrip:
     """Apply the page's own choices to a request parsed from free text, then
-    plan it. Shared by `plan_trip_from_prompt` and app/agent/assistant.py."""
-    overrides: dict = {"include_flights": include_flights, "include_hotels": include_hotels}
+    plan it. Shared by `plan_trip_from_prompt` and app/agent/assistant.py.
+
+    `places_per_city` always replaces whatever the parser read, so a saved
+    trip records what was actually looked up — nothing, unless the page's
+    Restaurants box asked for it.
+    """
+    overrides: dict = {
+        "include_flights": include_flights,
+        "include_hotels": include_hotels,
+        "places_per_city": places_per_city,
+    }
     if start_date and end_date:
         overrides |= {"start_date": start_date, "end_date": end_date}
     # Re-validated rather than model_copy'd, so picked dates go through the

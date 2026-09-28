@@ -23,6 +23,9 @@ class PlanFromPromptRequest(BaseModel):
     # them gets the full plan, as before these existed.
     include_flights: bool = True
     include_hotels: bool = True
+    # Restaurants in each city of the trip, from Google Maps. Off unless asked
+    # for: unlike flights and hotels, nothing predates it that expects it on.
+    include_restaurants: bool = False
     # The frontend's calendar pickers. Optional: when both are given they
     # replace whatever dates the sentence implied; when neither is, the
     # sentence (or the parser's defaults) decides, as before.

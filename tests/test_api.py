@@ -223,6 +223,7 @@ def test_the_page_has_the_date_pickers(client):
     html = client.get("/").text
     assert 'id="start-date"' in html
     assert 'id="end-date"' in html
+    assert 'id="include-restaurants"' in html
 
 
 # --- revisions and history ---------------------------------------------------
@@ -411,7 +412,24 @@ def test_ask_passes_the_pages_choices_through(client, trip_request, monkeypatch)
 
     assert seen["include_flights"] is True
     assert seen["include_hotels"] is False
+    assert seen["include_restaurants"] is False  # off unless asked for
     assert seen["start_date"] == date.fromisoformat(_in_days(5))
+
+
+def test_ask_passes_the_restaurants_box_through(client, trip_request, monkeypatch):
+    from app.agent.assistant import Answer
+
+    seen = {}
+
+    def fake(prompt, **kwargs):
+        seen.update(kwargs)
+        return Answer(kind="trip", trip=sample_planned_trip(trip_request, trip_id="ask-3"))
+
+    monkeypatch.setattr("app.api.routes.ask.answer_prompt", fake)
+
+    client.post("/ask", json={"prompt": "Kerala", "include_restaurants": True})
+
+    assert seen["include_restaurants"] is True
 
 
 def test_ask_turns_a_maps_failure_into_a_502(client, monkeypatch):

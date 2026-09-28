@@ -8,6 +8,7 @@ const statusText = document.getElementById("status-text");
 const chipsEl = document.getElementById("chips");
 const includeFlights = document.getElementById("include-flights");
 const includeHotels = document.getElementById("include-hotels");
+const includeRestaurants = document.getElementById("include-restaurants");
 const startDateInput = document.getElementById("start-date");
 const endDateInput = document.getElementById("end-date");
 const reviseCard = document.getElementById("revise-card");
@@ -105,6 +106,7 @@ form.addEventListener("submit", async (event) => {
         prompt,
         include_flights: includeFlights.checked,
         include_hotels: includeHotels.checked,
+        include_restaurants: includeRestaurants.checked,
         ...dates,
       }),
     });
