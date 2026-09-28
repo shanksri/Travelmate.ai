@@ -152,6 +152,37 @@ def test_a_missing_key_is_an_error(monkeypatch):
         search_places("restaurants in Puri")
 
 
+def test_search_places_many_answers_each_query_in_order(fake_maps, monkeypatch):
+    from app.providers.google_maps import search_places_many
+
+    monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "fake")
+
+    async def fake_call_tool(tool, arguments, api_key):
+        query = arguments["textQuery"]
+        if "Munnar" in query:
+            return FakeMCPToolResult({"message": "quota exceeded"}, is_error=True)
+        return FakeMCPToolResult(structured={"summary": f"about {query}", "places": []})
+
+    monkeypatch.setattr(google_maps, "_call_tool", fake_call_tool)
+
+    kochi, munnar, alleppey = search_places_many(
+        ["best restaurants in Kochi", "best restaurants in Munnar", "best restaurants in Alleppey"]
+    )
+
+    assert kochi.summary == "about best restaurants in Kochi"
+    assert isinstance(munnar, GoogleMapsError) and "quota exceeded" in str(munnar)
+    assert alleppey.summary == "about best restaurants in Alleppey"
+
+
+def test_an_unmocked_call_is_blocked_by_the_test_suite(monkeypatch):
+    """The guard this file relies on: with nothing mocked, the offline MCP
+    runtime refuses to connect, so no test can reach Google by accident."""
+    monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "fake")
+
+    with pytest.raises(GoogleMapsError, match="A test attempted a real MCP session"):
+        search_places("restaurants in Puri")
+
+
 def test_durations_are_read_from_googles_format():
     assert google_maps._seconds("12330s") == 12330
     assert google_maps._seconds("59.6s") == 60

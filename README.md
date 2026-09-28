@@ -262,6 +262,21 @@ no third-party keys and the tests never touch a network.
 via SerpApi's hosted MCP server, and mock data for everything else — lodging,
 attractions and weather still have no real source. Needs `SERPAPI_API_KEY`.
 
+### MCP sessions are shared
+
+Every MCP client (Google Flights via SerpApi, Google Maps) calls through one
+long-lived session per server, held by `app/providers/mcp_runtime.py`,
+instead of connecting and running the handshake on every call. Measured on
+Maps: a call took 2.6–3.7 s on a fresh connection and 1.5–2.2 s on a reused
+one; a route went from 1.3 s to 0.3 s. Independent calls run at the same
+time over that session: a trip's per-city searches (three cities in 2.4 s),
+and the outbound and return flight searches.
+
+The runtime is one event loop in a background thread that owns the sessions.
+Synchronous code hands it coroutines. A session that fails is replaced and
+the call retried once; an error the server itself returned is not retried.
+Sessions are closed when the app shuts down.
+
 ### Places and routes (Google Maps)
 
 `POST /ask` answers two kinds of request besides trips, using

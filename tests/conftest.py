@@ -152,6 +152,39 @@ def _block_real_network_calls(monkeypatch):
         monkeypatch.setattr(httpx2, "get", _blocked)
         monkeypatch.setattr(httpx2, "post", _blocked)
 
+        # MCP sessions don't use the get/post helpers: the SDK sends through
+        # httpx2.AsyncClient. Blocking only the helpers let three tests reach
+        # the real Google Maps once calls moved onto the shared MCP runtime.
+        # Only the async client is blocked: Starlette's TestClient subclasses
+        # the sync httpx2.Client, so blocking that would break every API test.
+        async def _blocked_async_send(*args, **kwargs):
+            raise BlockedNetworkCall("A test attempted a real MCP/httpx2 request — mock it.")
+
+        monkeypatch.setattr(httpx2.AsyncClient, "send", _blocked_async_send)
+
+
+@pytest.fixture(autouse=True)
+def _offline_mcp_runtime():
+    """Every test gets its own MCP runtime whose connector refuses to open a
+    session, so a provider call a test forgot to mock fails loudly instead of
+    reaching a real server. Also keeps one test's sessions from leaking into
+    the next."""
+    from contextlib import asynccontextmanager
+
+    from app.providers import mcp_runtime
+
+    @asynccontextmanager
+    async def _refuse(url, headers):
+        raise BlockedNetworkCall(f"A test attempted a real MCP session to {url} — mock it.")
+        yield  # pragma: no cover - never reached
+
+    previous = mcp_runtime._runtime
+    runtime = mcp_runtime.McpRuntime(connector=_refuse)
+    mcp_runtime._runtime = runtime
+    yield runtime
+    mcp_runtime._runtime = previous
+    runtime.close()
+
 
 class FakeHTTPResponse:
     """Stands in for an `httpx.Response` returned by a mocked get/post."""

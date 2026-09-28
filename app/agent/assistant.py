@@ -12,7 +12,6 @@ their cities, one Maps search per city runs in parallel.
 """
 
 import logging
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from typing import Literal
 
@@ -62,20 +61,24 @@ def trip_cities(trip: PlannedTrip) -> list[str]:
     return cities[:MAX_CITIES] or [trip.itinerary.destination]
 
 
-def _places_for(city: str, kind: str) -> CityPlaces:
-    try:
-        return CityPlaces(city=city, places=google_maps.search_places(f"best {kind} in {city}"))
-    except google_maps.GoogleMapsError as exc:
-        # One city failing shouldn't cost the traveller the whole plan.
-        logger.warning("places for %s failed: %s", city, exc)
-        return CityPlaces(city=city, error=str(exc))
-
-
 def places_by_city(trip: PlannedTrip, kind: str) -> list[CityPlaces]:
-    """One Maps search per city, run at the same time; results in trip order."""
+    """One Maps search per city, all at once over the shared MCP session;
+    results in trip order. One city failing doesn't cost the traveller the
+    others, or the plan."""
     cities = trip_cities(trip)
-    with ThreadPoolExecutor(max_workers=len(cities)) as pool:
-        return list(pool.map(lambda city: _places_for(city, kind), cities))
+    try:
+        results = google_maps.search_places_many([f"best {kind} in {city}" for city in cities])
+    except google_maps.GoogleMapsError as exc:  # e.g. no key: every city fails alike
+        results = [exc] * len(cities)
+
+    found = []
+    for city, result in zip(cities, results, strict=True):
+        if isinstance(result, google_maps.GoogleMapsError):
+            logger.warning("places for %s failed: %s", city, result)
+            found.append(CityPlaces(city=city, error=str(result)))
+        else:
+            found.append(CityPlaces(city=city, places=result))
+    return found
 
 
 def answer_prompt(

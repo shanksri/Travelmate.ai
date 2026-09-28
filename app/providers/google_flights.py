@@ -15,21 +15,18 @@ free plan), and a trip makes two — one per leg. Repeat searches for the same
 airports and date are served from `app/providers/flight_cache.py`.
 """
 
-import asyncio
 import json
 import logging
 import os
 from datetime import date
 from typing import Any
 
-import httpx2
 from dotenv import load_dotenv
-from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client
 from mcp.types import CallToolResult
 
 from app.providers.flight_cache import get_flight_cache
 from app.providers.iata import airports_for, resolve_route
+from app.providers.mcp_runtime import get_mcp_runtime
 
 load_dotenv()
 
@@ -50,12 +47,13 @@ def _api_key(api_key: str | None = None) -> str:
 
 
 async def _call_search(params: dict, api_key: str) -> CallToolResult:
-    headers = {"Authorization": f"Bearer {api_key}"}
-    async with httpx2.AsyncClient(headers=headers, timeout=90) as http_client:
-        async with streamable_http_client(MCP_URL, http_client=http_client) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                return await session.call_tool("search", {"params": params, "mode": "compact"})
+    """One search on the shared, long-lived session (app/providers/mcp_runtime.py)."""
+    return await get_mcp_runtime().call_tool(
+        MCP_URL,
+        {"Authorization": f"Bearer {api_key}"},
+        "search",
+        {"params": params, "mode": "compact"},
+    )
 
 
 def fetch_flights(
@@ -94,7 +92,7 @@ def fetch_flights(
         "gl": "in",
     }
     try:
-        result = asyncio.run(_call_search(params, _api_key(api_key)))
+        result = get_mcp_runtime().run(_call_search(params, _api_key(api_key)))
     except GoogleFlightsError:
         raise
     except Exception as exc:  # network/transport failures surface uniformly

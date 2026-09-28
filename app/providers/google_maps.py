@@ -15,6 +15,10 @@ result's attribution must be shown with it. So nothing here is cached (unlike
 flight searches) and the page shows the attribution.
 
 Free usage is 10,000 requests a month; each tool call is one.
+
+Calls go over one long-lived session (app/providers/mcp_runtime.py) rather
+than a new connection each, and `search_places_many` runs several searches at
+once over it — a trip's per-city lookups.
 """
 
 import asyncio
@@ -24,14 +28,12 @@ import os
 from typing import Any
 from urllib.parse import urlencode
 
-import httpx2
 from dotenv import load_dotenv
-from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import MCPError
 from mcp.types import CallToolResult
 
 from app.models.maps import Attribution, PlaceLink, PlacesAnswer, RouteAnswer, TravelMode
+from app.providers.mcp_runtime import get_mcp_runtime
 
 load_dotenv()
 
@@ -62,12 +64,10 @@ def _api_key(api_key: str | None = None) -> str:
 
 
 async def _call_tool(tool: str, arguments: dict, api_key: str) -> CallToolResult:
-    headers = {"X-Goog-Api-Key": api_key}
-    async with httpx2.AsyncClient(headers=headers, timeout=60) as http_client:
-        async with streamable_http_client(MCP_URL, http_client=http_client) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                return await session.call_tool(tool, arguments)
+    """One tool call on the shared, long-lived session (app/providers/mcp_runtime.py)."""
+    return await get_mcp_runtime().call_tool(
+        MCP_URL, {"X-Goog-Api-Key": api_key}, tool, arguments
+    )
 
 
 def _contains_mcp_error(exc: BaseException) -> bool:
@@ -79,11 +79,9 @@ def _contains_mcp_error(exc: BaseException) -> bool:
     return False
 
 
-def _run(tool: str, arguments: dict, api_key: str | None) -> dict[str, Any]:
+async def _arun(tool: str, arguments: dict, api_key: str) -> dict[str, Any]:
     try:
-        result = asyncio.run(_call_tool(tool, arguments, _api_key(api_key)))
-    except GoogleMapsError:
-        raise
+        result = await _call_tool(tool, arguments, api_key)
     except Exception as exc:  # network/transport failures surface uniformly
         if _contains_mcp_error(exc):
             raise GoogleMapsError(_REFUSED_HINT) from exc
@@ -106,9 +104,11 @@ def _attribution(raw: dict | None) -> Attribution | None:
     return Attribution(title=raw["title"], url=raw.get("url"))
 
 
-def search_places(query: str, *, api_key: str | None = None) -> PlacesAnswer:
-    """Places matching `query`, e.g. "best restaurants in Bhubaneswar"."""
-    raw = _run("search_places", {"textQuery": query}, api_key)
+def _run(tool: str, arguments: dict, api_key: str | None) -> dict[str, Any]:
+    return get_mcp_runtime().run(_arun(tool, arguments, _api_key(api_key)))
+
+
+def _places_answer(query: str, raw: dict[str, Any]) -> PlacesAnswer:
     places = []
     for index, place in enumerate(raw.get("places") or []):
         links = place.get("googleMapsLinks") or {}
@@ -125,6 +125,31 @@ def search_places(query: str, *, api_key: str | None = None) -> PlacesAnswer:
     if not summary and not places:
         raise GoogleMapsError(f"Google Maps found nothing for {query!r}")
     return PlacesAnswer(query=query, summary=summary, places=places)
+
+
+def search_places(query: str, *, api_key: str | None = None) -> PlacesAnswer:
+    """Places matching `query`, e.g. "best restaurants in Bhubaneswar"."""
+    return _places_answer(query, _run("search_places", {"textQuery": query}, api_key))
+
+
+def search_places_many(
+    queries: list[str], *, api_key: str | None = None
+) -> list[PlacesAnswer | GoogleMapsError]:
+    """Every query at once, over the one shared session. Each result is the
+    answer or that query's error, in the order given, so one failure doesn't
+    lose the others."""
+    key = _api_key(api_key)
+
+    async def one(query: str) -> PlacesAnswer | GoogleMapsError:
+        try:
+            return _places_answer(query, await _arun("search_places", {"textQuery": query}, key))
+        except GoogleMapsError as exc:
+            return exc
+
+    async def every() -> list[PlacesAnswer | GoogleMapsError]:
+        return list(await asyncio.gather(*(one(query) for query in queries)))
+
+    return get_mcp_runtime().run(every())
 
 
 def _seconds(duration: str | None) -> int | None:

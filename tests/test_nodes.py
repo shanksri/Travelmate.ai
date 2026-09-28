@@ -60,6 +60,28 @@ def test_flight_node_searches_both_legs_and_asks_the_llm_to_pick(provider, trip_
     assert llm.calls[0]["json_mode"] is False
 
 
+def test_flight_node_searches_both_legs_at_the_same_time(provider, trip_request):
+    """Each search waits at a barrier only the other one can release. Run one
+    after the other, the first would wait alone and the barrier would time
+    out; run together, both get through."""
+    import threading
+
+    barrier = threading.Barrier(2, timeout=2)
+
+    class BothAtOnce:
+        def search_flights(self, **kwargs):
+            barrier.wait()
+            return provider.search_flights(**kwargs)
+
+    node = build_flight_node(BothAtOnce(), FakeLLM(responses=["ok"]))
+    state = initial_state(trip_request) | {"resolved_destination": "Lisbon, Portugal"}
+
+    result = node(state)
+
+    assert result["flight_results"]["outbound_options"]
+    assert result["flight_results"]["return_options"][0]["origin"] == "Lisbon, Portugal"
+
+
 def test_flight_agent_is_told_what_is_booked_rather_than_asked_to_guess(
     trip_request, monkeypatch
 ):

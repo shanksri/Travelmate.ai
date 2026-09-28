@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.routes import ask, health, trips
 from app.core.logging import configure_logging
 from app.providers.aviationstack import fetch_flights
+from app.providers.mcp_runtime import shutdown_mcp_runtime
 from app.providers.tavily import fetch_search
 from app.store import get_store
 
@@ -25,6 +26,8 @@ async def lifespan(app: FastAPI):
     # fail the container immediately, not the first trip a user plans.
     get_store()
     yield
+    # Close the long-lived MCP sessions (app/providers/mcp_runtime.py).
+    shutdown_mcp_runtime()
 
 
 app = FastAPI(

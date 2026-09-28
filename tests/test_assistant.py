@@ -129,16 +129,34 @@ def test_a_trip_request_is_planned_with_the_pages_choices(
     assert "places" not in fake_maps and "route" not in fake_maps
 
 
+def _patch_many(monkeypatch, answer_for) -> list[str]:
+    """Replaces the batch Maps search; `answer_for(query)` returns an answer
+    or raises GoogleMapsError, which comes back in that query's slot as the
+    real one does. Returns the list of queries searched."""
+    from app.providers.google_maps import GoogleMapsError
+
+    queries: list[str] = []
+
+    def search_places_many(qs):
+        queries.extend(qs)
+        results = []
+        for q in qs:
+            try:
+                results.append(answer_for(q))
+            except GoogleMapsError as exc:
+                results.append(exc)
+        return results
+
+    monkeypatch.setattr(assistant.google_maps, "search_places_many", search_places_many)
+    return queries
+
+
 def test_a_trip_that_asks_for_places_gets_one_search_per_city(
     fake_plan, monkeypatch, trip_request, settings
 ):
-    queries = []
-
-    def search_places(query):
-        queries.append(query)
-        return PlacesAnswer(query=query, summary="s", places=[])
-
-    monkeypatch.setattr(assistant.google_maps, "search_places", search_places)
+    queries = _patch_many(
+        monkeypatch, lambda query: PlacesAnswer(query=query, summary="s", places=[])
+    )
     fake_plan["trip"] = _trip_with_cities(
         trip_request,
         ["Kochi", "Kochi", "Alleppey", "Munnar", "munnar", None],
@@ -152,21 +170,24 @@ def test_a_trip_that_asks_for_places_gets_one_search_per_city(
 
     assert fake_plan["places_per_city"] == "restaurants"
     assert [c.city for c in answer.places_by_city] == ["Kochi", "Alleppey", "Munnar"]
-    assert sorted(queries) == sorted(
-        ["best restaurants in Kochi", "best restaurants in Alleppey", "best restaurants in Munnar"]
-    )
+    # One batch, in the trip's order: the searches themselves run at once.
+    assert queries == [
+        "best restaurants in Kochi",
+        "best restaurants in Alleppey",
+        "best restaurants in Munnar",
+    ]
     assert answer.places_by_city[0].places.query == "best restaurants in Kochi"
 
 
 def test_one_city_failing_still_returns_the_trip(fake_plan, monkeypatch, trip_request, settings):
     from app.providers.google_maps import GoogleMapsError
 
-    def search_places(query):
+    def answer_for(query):
         if "Munnar" in query:
             raise GoogleMapsError("quota exceeded")
         return PlacesAnswer(query=query, summary="s", places=[])
 
-    monkeypatch.setattr(assistant.google_maps, "search_places", search_places)
+    _patch_many(monkeypatch, answer_for)
     fake_plan["trip"] = _trip_with_cities(
         trip_request, ["Kochi", "Munnar"], places_per_city="restaurants"
     )
@@ -203,13 +224,9 @@ def test_without_the_restaurants_box_nothing_is_looked_up(
 def test_the_sentence_can_choose_the_kind_of_place(
     fake_plan, monkeypatch, trip_request, settings
 ):
-    queries = []
-
-    def search_places(query):
-        queries.append(query)
-        return PlacesAnswer(query=query, summary="s", places=[])
-
-    monkeypatch.setattr(assistant.google_maps, "search_places", search_places)
+    queries = _patch_many(
+        monkeypatch, lambda query: PlacesAnswer(query=query, summary="s", places=[])
+    )
     fake_plan["trip"] = _trip_with_cities(trip_request, ["Kolkata"])
     llm = _parse_llm(intent="trip", destination="Kolkata", places_per_city="street food")
 
@@ -240,3 +257,21 @@ def test_a_long_trip_searches_at_most_max_cities(trip_request):
 def test_half_a_date_pair_is_refused(settings):
     with pytest.raises(ValueError, match="both start_date and end_date"):
         answer_prompt("Goa", start_date=date(2027, 1, 1), llm=_parse_llm(), settings=settings)
+
+
+def test_a_failure_before_any_search_marks_every_city(fake_plan, monkeypatch, trip_request,
+                                                      settings):
+    """E.g. no API key: the batch raises instead of returning per-query errors."""
+    from app.providers.google_maps import GoogleMapsError
+
+    def no_key(queries):
+        raise GoogleMapsError("GOOGLE_MAPS_API_KEY is not set")
+
+    monkeypatch.setattr(assistant.google_maps, "search_places_many", no_key)
+    fake_plan["trip"] = _trip_with_cities(trip_request, ["Kochi", "Munnar"])
+
+    answer = answer_prompt("kerala", include_restaurants=True, llm=_parse_llm(),
+                           settings=settings)
+
+    assert [c.error for c in answer.places_by_city] == ["GOOGLE_MAPS_API_KEY is not set"] * 2
+    assert answer.trip is not None

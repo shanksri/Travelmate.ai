@@ -7,6 +7,7 @@ the same compiled graph for every request.
 """
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
 from app.agent.itinerary_json import ItineraryValidationError, parse_itinerary
@@ -98,18 +99,24 @@ def build_flight_node(provider: TravelProvider, llm: LLM):
             }
 
         destination = state["resolved_destination"]
-        outbound = provider.search_flights(
-            origin=request.origin,
-            destination=destination,
-            depart=request.start_date,
-            travelers=request.travelers,
-        )
-        return_leg = provider.search_flights(
-            origin=destination,
-            destination=request.origin,
-            depart=request.end_date,
-            travelers=request.travelers,
-        )
+        # Both legs at once: they're independent, and a live search takes
+        # ~4 s each, so searching them one after the other doubled the wait.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outbound_search = pool.submit(
+                provider.search_flights,
+                origin=request.origin,
+                destination=destination,
+                depart=request.start_date,
+                travelers=request.travelers,
+            )
+            return_search = pool.submit(
+                provider.search_flights,
+                origin=destination,
+                destination=request.origin,
+                depart=request.end_date,
+                travelers=request.travelers,
+            )
+            outbound, return_leg = outbound_search.result(), return_search.result()
         recommendation = llm.complete(
             system=FLIGHT_AGENT_SYSTEM,
             user=json.dumps(
