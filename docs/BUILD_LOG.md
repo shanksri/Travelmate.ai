@@ -707,6 +707,45 @@ agents". Before this, "Change this plan" could only re-plan the days;
 changes are refused ("no flight options"). A trip planned without flights
 can't gain them through a change; plan it again with Flights ticked.
 
+### Step 34 · Places and routes from Google Maps (`293a3b5`, 2026-09-28)
+
+"Show me best places to eat in Bhubaneswar" and "how far is Rameshwaram from
+Madurai" now get answers instead of being planned as trips.
+
+- **Google's official hosted MCP server**, Maps Grounding Lite
+  (`https://mapstools.googleapis.com/mcp`), over a custom server, for the
+  same reason SerpApi's official one was used for flights. Its
+  `search_places` returns a written summary citing places as `[0]`, `[1]`…
+  with a Maps link each; `compute_routes` returns distance and duration by
+  road or on foot. 10,000 free requests a month.
+- **No extra LLM call to tell requests apart.** The parser's existing call
+  now also returns `intent` (trip / places / route), `places_query` and
+  `travel_mode`. On real `gpt-4o-mini`, 8 of 8 test sentences sorted
+  correctly, including "5 days in Goa with good seafood restaurants", which
+  stays a trip. Places and routes make no further LLM calls.
+- **`POST /ask`** is what the prompt box calls now.
+  `POST /trips/plan-from-prompt` still plans a trip from any sentence.
+- **Google's terms shaped the rest.** Results are never saved or cached, so
+  `/ask` stores only trips. Every answer shows "Results from Google Maps",
+  and walking routes show Google's required beta warning. The summary's
+  citations become numbered links to each place.
+
+**Found live:**
+
+- The tool description says `text_query`, but the server only accepts
+  camelCase (`textQuery`, `travelMode`).
+- The key worked for listing tools, but every call failed because **the Maps
+  Grounding Lite API wasn't enabled** on its Google Cloud project. The MCP
+  SDK reduced Google's 403 (which names the fix) to a bare JSON-RPC
+  `-32603`, "Server returned an error response". A raw JSON-RPC probe
+  showed the real message. The client now turns that case into a message
+  saying what to check.
+
+**Not yet verified with a real Maps answer:** the API was still disabled at
+commit time. The client was built from the tools' published output
+schemas, the page layout was checked with sample answers in that format,
+and the full path (page → `/ask` → parser → Maps → error shown) ran live.
+
 ---
 
 ## Where things stand
@@ -718,9 +757,9 @@ can't gain them through a change; plan it again with Flights ticked.
 | Revisions | ✅ "Change this plan" box, routed to flights, hotel and/or days; refused whole with a reason when any part cannot be done; `gpt-4o` |
 | Frontend | ✅ Dark theme, free-text prompt, rupee rendering, cheapest/fastest flight table per leg, Flights/Hotels checkboxes, optional date pickers, revise box — no history browser |
 | Travel data | ⚠️ **Flights are real** under `TRAVELMATE_PROVIDER=live` (Google Flights via SerpApi's MCP server, 100 searches/month, cached 6h). Lodging, attractions and weather are **still mock**. The `.env` default is still `mock` |
-| MCP | ✅ Two clients (SerpApi — used by the planner for flights; Tavily — standalone), two servers (AviationStack — now keyless, weather) |
+| MCP | ✅ Three clients (SerpApi — flights; Google Maps Grounding Lite — places and routes; Tavily — standalone), two servers (AviationStack — now keyless, weather) |
 | Currency | ✅ Rupee-native, with legacy USD trips preserved |
-| Tests | ✅ 226 passing, `ruff` clean |
+| Tests | ✅ 255 passing, `ruff` clean |
 | GitHub | ✅ Pushed to `shanksri/Travelmate.ai` (public) over SSH |
 
 **Obvious next steps**, roughly in order of value:
