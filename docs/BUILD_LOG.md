@@ -754,6 +754,36 @@ Each place's attribution title turned out to be its **name** ("The BOMBAI -
 Google Maps"). The footer now reads "From Google Maps:" followed by every
 place name linked (`0425071`), instead of repeating the full titles.
 
+
+### Step 35 · Places in each city of a trip (`1fd47a3`, 2026-09-28)
+
+**The bug:** "give me 6 day kerala itenary, also tell me best places to eat
+in each city" returned a plan with no places to eat. The parser rightly
+treated it as a trip, but reduced the second half to a `food` interest, so
+Google Maps was never asked. The plan's own food items ("Lunch at a Local
+Restaurant") were generic, because the itinerary AI only has the sample
+attractions list.
+
+- **The parser keeps the request.** A new `places_per_city` field
+  ("restaurants", "cafes", "street food") goes on the trip request. The
+  prompt says a food interest alone is not a request for places.
+- **Every itinerary day names its `city`**, in both the planning and
+  revising formats. Before, the city was only inside the free-text summary,
+  where "Departure" could pass for a place.
+- **One Maps search per city, in parallel,** once the plan exists: "best
+  restaurants in Kochi", "…in Munnar". Capped at 6 cities, in visiting
+  order. Results come back beside the trip (`places_by_city`), not inside
+  it, so they're never saved (Google's terms). If one city fails, the plan
+  is still returned with an error line for that city.
+
+**Verified live** with the exact sentence through the page: 24 s in total.
+The days came back based in Kochi and Munnar, and there were two cards,
+"best restaurants in Kochi" and "…in Munnar", with 5 real places each
+(Restaurant Chef Pillai 4.7★, Fort House Restaurant, Seagull and others).
+
+**Limit:** a revised version of the plan is shown without the city cards.
+They belong to the answer, not the saved trip.
+
 ---
 
 ## Where things stand
@@ -767,7 +797,7 @@ place name linked (`0425071`), instead of repeating the full titles.
 | Travel data | ⚠️ **Flights are real** under `TRAVELMATE_PROVIDER=live` (Google Flights via SerpApi's MCP server, 100 searches/month, cached 6h). Lodging, attractions and weather are **still mock**. The `.env` default is still `mock` |
 | MCP | ✅ Three clients (SerpApi — flights; Google Maps Grounding Lite — places and routes; Tavily — standalone), two servers (AviationStack — now keyless, weather) |
 | Currency | ✅ Rupee-native, with legacy USD trips preserved |
-| Tests | ✅ 255 passing, `ruff` clean |
+| Tests | ✅ 261 passing, `ruff` clean |
 | GitHub | ✅ Pushed to `shanksri/Travelmate.ai` (public) over SSH |
 
 **Obvious next steps**, roughly in order of value:
