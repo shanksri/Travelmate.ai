@@ -88,9 +88,19 @@ city:
   day's `summary`. Give a transition day between cities a lighter, half-day
   slate of activities to leave room for travel — do not pretend travel
   between cities is instant.
+- Several states, regions or countries named together (e.g. "Kerala and
+  Tamil Nadu", "Spain and Portugal"): the traveller wants every one of them.
+  Give each a fair share of the days — roughly equal unless they say
+  otherwise — with at least one well-known city or area in each, and order
+  the route so it doesn't double back. Planning mostly in one and touching
+  the other for a day or two is not what was asked.
 - One specific city (e.g. "Lisbon, Portugal", "Kyoto"): keep the entire plan
   inside that city and its neighbourhoods. Do not invent travel to other
   cities.
+
+Don't spend a day travelling back to the first city just to leave from it.
+Unless flights are booked, the trip can end wherever the route naturally
+ends.
 
 Use real, specific, well-known places by name — landmarks, neighbourhoods,
 markets, museums — appropriate to the actual destination, drawing on your own
@@ -167,8 +177,10 @@ Changes come in two kinds, and they get different amounts of freedom:
   the part of the route you reworked stay exactly as they were.
 
 Needing to rearrange days or add travel is NOT a reason to decline — making
-those adjustments is the job. Decline only when the change genuinely can't
-fit. Check it honestly against these hard limits:
+those adjustments is the job. The trip's length is fixed, so "more days in
+X" or "add days in X" means moving days to X from the rest of the route, not
+making the trip longer; do that rather than decline. Decline only when the
+change genuinely can't fit. Check it honestly against these hard limits:
 - The trip still starts and ends where it does now. If the last day departs
   from Kochi, it still departs from Kochi — the traveller's way home leaves
   from there.
@@ -245,11 +257,17 @@ write the new plan yourself.
   when the days don't need to change.
 - declined: null, unless some part of the change can't be satisfied — e.g.
   they want a nonstop flight and none of the options is nonstop, a cheaper
-  flight when the cheapest is already booked, or anything about flights or a
-  hotel on a trip that has none. A change is applied whole or not at all, so
-  if any part can't be done, decline it all: one sentence the traveller will
-  read, naming the part that can't be done and why. Never pick an option that
-  doesn't actually satisfy the request just to have picked something.
+  flight when the cheapest is already booked, or a request to change the
+  flights or the hotel on a trip that has none. A change is applied whole or
+  not at all, so if any part can't be done, decline it all: one sentence the
+  traveller will read, naming the part that can't be done and why. Never pick
+  an option that doesn't actually satisfy the request just to have picked
+  something.
+  A trip without flights or a hotel is the traveller's own choice, not a
+  problem. A change to the days (more days somewhere, a new stop, different
+  activities) never needs a flight or a hotel, so their absence is never a
+  reason to decline it. Decline over a missing flight or hotel only when the
+  request itself asks to change one.
 - reasoning: one short sentence on what you routed where, and why.
 
 Respond with a single JSON object with exactly these keys: outbound, return,

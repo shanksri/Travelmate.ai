@@ -105,7 +105,9 @@ def _same_flight(a: FlightLeg | None, b: FlightLeg | None) -> bool:
 
 def _flight_menu(options: list[FlightLeg], booked: FlightLeg | None) -> list[dict] | str:
     if not options:
-        return "none — this trip has no flight options for this leg"
+        # Worded as the traveller's choice, not a gap: "none — this trip has
+        # no hotel" read to the router as a reason to refuse day changes.
+        return "none: the traveller planned this trip without flights"
     return [
         {
             "index": i,
@@ -122,7 +124,7 @@ def _flight_menu(options: list[FlightLeg], booked: FlightLeg | None) -> list[dic
 
 def _hotel_menu(options: list[LodgingOption]) -> list[dict] | str:
     if not options:
-        return "none — this trip has no hotel"
+        return "none: the traveller planned this trip without a hotel"
     return [
         {
             "index": i,
@@ -279,11 +281,26 @@ def revise_trip(
     request = previous.request
     itinerary = previous.itinerary
 
-    route = _route_change(previous, change_request, llm, attempts)
-    if route.declined:
-        raise RevisionDeclined(route.declined)
-
-    trace = [f"change_router: {route.reasoning or 'routed the change'}"]
+    if (
+        not itinerary.outbound_options
+        and not itinerary.return_options
+        and not itinerary.lodging_options
+    ):
+        # Nothing to re-pick, so the only thing a change can touch is the
+        # days. Routing it anyway once refused "adjust more days to tamil
+        # nadu" (2 runs in 5) because "the trip has no hotel". This is every
+        # trip planned with Flights and Hotels unticked, the page's default,
+        # and skipping the router saves a call. A request that really is about
+        # flights or a hotel is declined by the day planner instead.
+        route = ChangeRoute(itinerary=change_request)
+        trace = [
+            "change_router: skipped (no flights or hotel to re-pick; the change goes to the days)"
+        ]
+    else:
+        route = _route_change(previous, change_request, llm, attempts)
+        if route.declined:
+            raise RevisionDeclined(route.declined)
+        trace = [f"change_router: {route.reasoning or 'routed the change'}"]
 
     outbound = itinerary.outbound_flight
     if route.outbound is not None:

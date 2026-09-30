@@ -270,3 +270,13 @@ def test_the_prompt_describes_all_three_intents():
 
     for phrase in ('"trip"', '"places"', '"route"', "places_query", "travel_mode"):
         assert phrase in PARSE_REQUEST_SYSTEM
+
+
+def test_the_itinerary_prompt_shares_days_across_named_regions():
+    """Live, "10 day itinerary for tamil nadu and kerala" gave Tamil Nadu 2 of
+    10 days (Kanyakumari only) and spent 2 days going back to Kochi."""
+    from app.agent.prompts import ITINERARY_AGENT_SYSTEM
+
+    assert "Several states, regions or countries named together" in ITINERARY_AGENT_SYSTEM
+    assert "fair share of the days" in ITINERARY_AGENT_SYSTEM
+    assert "Don't spend a day travelling back to the first city" in ITINERARY_AGENT_SYSTEM

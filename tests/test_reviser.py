@@ -504,7 +504,7 @@ def test_the_router_prompt_keeps_day_numbers_in_the_instruction():
 def test_the_router_prompt_declines_a_change_that_is_only_partly_possible():
     """Live, "a cheaper return flight (already the cheapest) and a houseboat on
     day 3" once applied only the houseboat and dropped the flight silently."""
-    assert "applied whole or not at all" in ROUTE_CHANGE_SYSTEM
+    assert "not at all, so if any part can't be done, decline it all" in ROUTE_CHANGE_SYSTEM
 
 
 def test_the_router_and_the_day_planner_send_their_schemas(planned, trip_request, settings):
@@ -518,3 +518,73 @@ def test_the_router_and_the_day_planner_send_their_schemas(planned, trip_request
     assert schemas[ROUTE_CHANGE_SYSTEM] is ChangeRoute
     assert schemas[REVISE_ITINERARY_SYSTEM] is DraftItinerary
     assert schemas[FINAL_RESPONSE_AGENT_SYSTEM] is None  # plain text
+
+
+# --- trips planned without flights or a hotel ------------------------------
+
+
+@pytest.fixture
+def days_only(planned):
+    """A trip planned with Flights and Hotels unticked: nothing to re-pick."""
+    it = planned.itinerary
+    it.outbound_flight = it.return_flight = None
+    it.outbound_options, it.return_options, it.lodging_options = [], [], []
+    return planned
+
+
+def test_a_days_only_trip_skips_the_router(days_only, trip_request, settings):
+    """Live, the router refused "adjust more days to tamil nadu" on such a
+    trip 2 times in 5, because "the trip has no hotel"."""
+    llm = FakeLLM(
+        by_system={
+            REVISE_ITINERARY_SYSTEM: [json.dumps(changed_payload(trip_request))],
+            FINAL_RESPONSE_AGENT_SYSTEM: ["Summary."],
+        }
+    )
+
+    revised = revise_trip(days_only, "adjust more days to tamil nadu", llm=llm, settings=settings)
+
+    assert [c["system"] for c in llm.calls] == [
+        REVISE_ITINERARY_SYSTEM,
+        FINAL_RESPONSE_AGENT_SYSTEM,
+    ]
+    revise_call = llm.calls[0]
+    assert "The traveller asks: adjust more days to tamil nadu" in revise_call["user"]
+    assert revised.itinerary.days[0].summary == "Day 1 (revised)"
+    assert revised.agent_trace[0].startswith("change_router: skipped")
+
+
+def test_a_flight_request_on_a_days_only_trip_is_declined_by_the_day_planner(
+    days_only, trip_request, settings
+):
+    llm = unchanged_llm(
+        trip_request, ["Couldn't apply: this plan doesn't include flights to change."]
+    )
+
+    with pytest.raises(RevisionDeclined, match="doesn't include flights"):
+        revise_trip(days_only, "switch me to a nonstop flight", llm=llm, settings=settings)
+
+    assert ROUTE_CHANGE_SYSTEM not in [c["system"] for c in llm.calls]
+
+
+def test_a_trip_with_flights_but_no_hotel_still_routes(with_options, settings):
+    with_options.itinerary.lodging_options = []
+    llm = FakeLLM(
+        by_system={
+            ROUTE_CHANGE_SYSTEM: [route(outbound=1)],
+            FINAL_RESPONSE_AGENT_SYSTEM: ["Summary."],
+        }
+    )
+
+    revise_trip(with_options, "nonstop outbound", llm=llm, settings=settings)
+
+    sent = json.loads(llm.calls[0]["user"])
+    # Worded as the traveller's choice: "none — this trip has no hotel" read
+    # to the router as a reason to refuse changes to the days.
+    assert sent["hotel_options"] == "none: the traveller planned this trip without a hotel"
+
+
+def test_the_router_prompt_says_a_missing_hotel_never_blocks_a_day_change():
+    flat = " ".join(ROUTE_CHANGE_SYSTEM.split())  # the prompt wraps mid-sentence
+    assert "their absence is never a reason to decline it" in flat
+    assert "only when the request itself asks to change one" in flat
