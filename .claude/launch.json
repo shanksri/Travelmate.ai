@@ -5,7 +5,8 @@
       "name": "travelmate-api",
       "runtimeExecutable": ".venv/Scripts/python.exe",
       "runtimeArgs": ["scripts/run_server.py"],
-      "port": 8000
+      "port": 8000,
+      "autoPort": true
     }
   ]
 }

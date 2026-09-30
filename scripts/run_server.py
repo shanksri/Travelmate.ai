@@ -7,6 +7,7 @@ manager, for instance), it can silently import a same-named `app` package
 from an entirely different project instead of failing loudly.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -16,4 +17,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import uvicorn  # noqa: E402
 
 if __name__ == "__main__":
-    uvicorn.run("app.main:app", host="127.0.0.1", port=8000)
+    # PORT lets a dev-server manager run this beside an instance already on
+    # 8000 (e.g. one started by hand with `uvicorn --reload`).
+    uvicorn.run("app.main:app", host="127.0.0.1", port=int(os.environ.get("PORT", "8000")))
