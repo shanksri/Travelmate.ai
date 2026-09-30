@@ -877,6 +877,64 @@ eagerly (e.g. "interested in food" became `restaurants`). It no longer
 matters, because the Restaurants checkbox decides (Step 36) and the sentence
 only picks the kind.
 
+
+### Step 39 · Day changes no longer refused over a missing hotel (`985d453`, 2026-09-30)
+
+**The bugs:** "give me 10 day itenary for tamil nadu and kerala" gave Tamil
+Nadu 2 of 10 days (Kanyakumari only) and spent the last 2 back in Kochi.
+Then "adjust more days to tamil nadu" was refused: *"This trip has no
+flights or hotel, so those parts can't be changed."*
+
+**Why it was refused:** reproduced 2 runs in 5. The router correctly routed
+the change to the days, then declined anyway, reasoning that more days in
+Tamil Nadu needed a hotel. The trip was planned with Flights and Hotels
+unticked, and the option list it was shown said "none — this trip has no
+hotel".
+
+- **No flight or hotel options → no router.** There's nothing to re-pick, so
+  the whole change goes to the day planner. That's deterministic, saves a
+  call, and covers every trip planned with the page's defaults. A flight
+  request on such a trip is still declined, by the day planner: *"…the
+  itinerary does not include any flights to modify."*
+- For trips that do have flights or a hotel, the router prompt says their
+  absence is the traveller's choice and never blocks a day change, and the
+  empty lists are worded that way. On a trip with both, 3 of 3 day changes
+  were routed through.
+- **"Add more days in X"** had been declined as lengthening the trip. The day
+  planner now reads it as moving days to X, since length is fixed.
+
+**Verified live on the trip (nothing saved):**
+
+| Request | Before | After |
+|---|---|---|
+| "adjust more days to tamil nadu" | refused 2 in 5 | applied 2 of 2: Tamil Nadu 2 → 4 days (Madurai added) |
+| "add more days in tamil nadu" | refused | applied 2 of 2: Tamil Nadu 2 → 3 days |
+| "switch me to a nonstop flight" | — | declined, with a reason |
+
+A revision keeps the trip's start and end, so it can only shuffle so much;
+the trip still ends in Kochi.
+
+**The original plan's imbalance:** the itinerary prompt covered "one country
+or region" but not several named together. A new rule gives each named
+region a fair share of the days, no doubling back, and no day spent
+returning to the first city just to leave. On `gpt-4o-mini`, Tamil Nadu now
+usually gets 4 of 10 days, but the routes are still inconsistent: one run
+went Kochi → back to Madurai.
+
+Making the share concrete ("about 5 each") was **tried and reverted**. It
+overshot to 7/3 in 2 of 3 runs and zig-zagged across the two states.
+
+**Model comparison** (same prompt, fresh plans, nothing saved):
+
+| Model | Tamil Nadu / Kerala | Route |
+|---|---|---|
+| `gpt-4o-mini` | 4/6, 3/7 | one sensible, one doubling back to Madurai |
+| `gpt-4o` | 7/3, 7/3 | both sensible: Chennai → Mahabalipuram → Pondicherry → Madurai → (Munnar) → Kochi |
+
+Same pattern as revisions (Step 30): the instructions are right, and
+`gpt-4o-mini` can't reliably route across two regions. Using `gpt-4o` for
+the itinerary is the user's call, because of the cost.
+
 ---
 
 ## Where things stand
@@ -890,7 +948,7 @@ only picks the kind.
 | Travel data | ⚠️ **Flights are real** under `TRAVELMATE_PROVIDER=live` (Google Flights via SerpApi's MCP server, 100 searches/month, cached 6h). Lodging, attractions and weather are **still mock**. The `.env` default is still `mock` |
 | MCP | ✅ Three clients (SerpApi — flights; Google Maps Grounding Lite — places and routes; Tavily — standalone), two servers (AviationStack — now keyless, weather) |
 | Currency | ✅ Rupee-native, with legacy USD trips preserved |
-| Tests | ✅ 293 passing, `ruff` clean |
+| Tests | ✅ 298 passing, `ruff` clean |
 | GitHub | ✅ Pushed to `shanksri/Travelmate.ai` (public) over SSH |
 
 ---
