@@ -10,6 +10,8 @@ import hashlib
 from datetime import date
 from typing import Any
 
+from app.models.itinerary import DataSource
+
 
 def _destination(name: str, tags: list[str], base_daily: int) -> dict[str, Any]:
     return {"name": name, "tags": tags, "base_daily": base_daily}
@@ -60,7 +62,22 @@ def _jitter(seed: int, low: float, high: float) -> float:
     return round(low + (seed % 1000) / 1000 * (high - low), 2)
 
 
+SAMPLE = DataSource(status="sample", provider="sample data")
+
+
 class MockTravelProvider:
+    # Sample data is labelled as such on the page: it was mistaken for real
+    # fares twice ("Northwind", "Meridian Air") before it said so.
+    def search_flights_with_source(
+        self, origin: str, destination: str, depart: date, travelers: int
+    ) -> tuple[list[dict[str, Any]], DataSource]:
+        return self.search_flights(origin, destination, depart, travelers), SAMPLE
+
+    def search_lodging_with_source(
+        self, destination: str, check_in: date, nights: int, travelers: int
+    ) -> tuple[list[dict[str, Any]], DataSource]:
+        return self.search_lodging(destination, check_in, nights, travelers), SAMPLE
+
     def search_destinations(
         self, interests: list[str], month: int, budget_level: str
     ) -> list[dict[str, Any]]:

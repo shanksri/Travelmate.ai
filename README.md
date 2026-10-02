@@ -346,7 +346,7 @@ flights** on the exact dates, cheapest ₹9,131 (Cleartrip showed ~₹8k).
 
 Limits:
 
-- **100 searches/month** on SerpApi's free plan, and every *new* route and date
+- **250 searches/month** on SerpApi's free plan, and every *new* route and date
   spends one search per leg. Searches are **cached** for
   `TRAVELMATE_FLIGHT_CACHE_TTL_HOURS` (default 6) in
   `app/providers/flight_cache.py`, keyed by airports and date: re-planning the
@@ -360,6 +360,28 @@ Limits:
 - If a search finds nothing or fails, the trip plans **without flights** rather
   than falling back to mock ones, which would be indistinguishable from real
   fares on the page.
+
+**Retry and fallback chain** (`fetch_flights_with_fallback`, with
+`app/providers/resilience.py` and `app/providers/serpapi.py`). For each leg,
+in order:
+
+1. **A fresh cached search** (under 6 h), labelled "checked N h ago".
+2. **A live search**, retried twice (after 1 s, then 3 s) only for failures
+   that tend to clear up by themselves: timeouts and dropped connections.
+   An invalid key or exhausted quota isn't retried. It opens a circuit
+   breaker at once; so do three failures in a row. While the breaker is open
+   (15 min), searches skip the live source instead of each waiting out a
+   timeout. "No results" is an answer, not a failure.
+3. **An older search**, kept up to `TRAVELMATE_STALE_CACHE_HOURS` (default 48)
+   for this, labelled "Couldn't refresh just now, so these are prices from
+   N h ago".
+4. **Unavailable**: no flights, a reason, and a link to run the search on
+   Google Flights.
+
+Each leg's result carries a `DataSource` (live, cached, stale, unavailable
+or sample) saved on the itinerary, and the page prints it above the table.
+Mock data is labelled "Sample data, not real prices" because it was
+mistaken for real fares twice.
 
 ### Real fetch clients (built, tested, not wired into the pipeline yet)
 

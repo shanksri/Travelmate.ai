@@ -7,6 +7,8 @@ real integration is a drop-in replacement and the tests never touch a network.
 from datetime import date
 from typing import Any, Protocol
 
+from app.models.itinerary import DataSource
+
 
 class TravelProvider(Protocol):
     def search_destinations(
@@ -25,6 +27,19 @@ class TravelProvider(Protocol):
         self, destination: str, check_in: date, nights: int, travelers: int
     ) -> list[dict[str, Any]]:
         """Priced lodging options for the stay."""
+        ...
+
+    def search_flights_with_source(
+        self, origin: str, destination: str, depart: date, travelers: int
+    ) -> tuple[list[dict[str, Any]], DataSource]:
+        """`search_flights`, plus where the results came from (live, cached,
+        stale, unavailable or sample), for the page to label. Never raises."""
+        ...
+
+    def search_lodging_with_source(
+        self, destination: str, check_in: date, nights: int, travelers: int
+    ) -> tuple[list[dict[str, Any]], DataSource]:
+        """`search_lodging`, plus where the results came from."""
         ...
 
     def search_attractions(

@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     # the same route and date within this window costs nothing. 0 disables it.
     flight_cache_ttl_hours: float = 6.0
 
+    # How long a search is kept after it stops being fresh, as a fallback
+    # for when the live search fails: shown labelled with its age rather
+    # than showing nothing. See app/providers/resilience.py.
+    stale_cache_hours: float = 48.0
+
     log_level: str = "INFO"
 
 

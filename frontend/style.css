@@ -304,6 +304,20 @@ button[type="submit"]:not(:disabled):hover {
   padding-top: 0.85rem;
 }
 
+.source-line {
+  margin: -0.4rem 0 0.75rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.source-line.warn {
+  color: #f0b45a;
+}
+
+.source-line a {
+  color: #a9b8ff;
+}
+
 .flight-table {
   width: 100%;
   border-collapse: collapse;

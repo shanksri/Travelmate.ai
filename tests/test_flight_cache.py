@@ -7,7 +7,7 @@ from conftest import FakeMCPToolResult
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 
-from app.providers import flight_cache, google_flights
+from app.providers import flight_cache, serpapi
 from app.providers.flight_cache import InMemoryFlightCache, SqlFlightCache
 from app.providers.google_flights import GoogleFlightsError, fetch_flights
 
@@ -124,7 +124,7 @@ def mcp_calls(monkeypatch):
         calls.append(params)
         return calls.result
 
-    monkeypatch.setattr(google_flights, "_call_search", fake_call_search)
+    monkeypatch.setattr(serpapi, "_call_search", fake_call_search)
     return calls
 
 
@@ -155,3 +155,46 @@ def test_a_failed_search_is_not_cached(mcp_calls):
     mcp_calls.respond_with(FakeMCPToolResult(PAYLOAD))
     assert _search() == PAYLOAD
     assert len(mcp_calls) == 2
+
+
+# --- kept past fresh, as a fallback ------------------------------------------
+
+
+@pytest.fixture(params=["memory", "sql"])
+def keeping_cache(request):
+    """Fresh for 6 h, kept for 48 h — the defaults."""
+    if request.param == "memory":
+        return InMemoryFlightCache(ttl_seconds=6 * HOUR, stale_seconds=48 * HOUR)
+    return SqlFlightCache(_sqlite(), ttl_seconds=6 * HOUR, stale_seconds=48 * HOUR)
+
+
+def test_a_search_past_its_ttl_is_still_kept_for_fallback(keeping_cache, clock):
+    keeping_cache.put("k", PAYLOAD)
+    clock["t"] += 20 * HOUR
+
+    assert keeping_cache.get("k") is None  # not fresh
+    kept = keeping_cache.lookup("k")
+    assert kept.payload == PAYLOAD
+    assert kept.age_seconds == 20 * HOUR
+
+
+def test_a_search_past_the_stale_limit_is_gone(keeping_cache, clock):
+    keeping_cache.put("k", PAYLOAD)
+    clock["t"] += 48 * HOUR
+
+    assert keeping_cache.lookup("k") is None
+
+
+def test_pruning_keeps_stale_rows_until_the_stale_limit(clock):
+    engine = _sqlite()
+    cache = SqlFlightCache(engine, ttl_seconds=6 * HOUR, stale_seconds=48 * HOUR)
+    cache.put("day-old", PAYLOAD)
+    clock["t"] += 24 * HOUR
+    cache.put("three-days-old", PAYLOAD)
+    clock["t"] += 30 * HOUR  # day-old is now 54 h old; three-days-old is 30 h
+
+    cache.put("fresh", PAYLOAD)
+
+    with engine.connect() as conn:
+        keys = {row.key for row in conn.execute(flight_cache._cache_table.select())}
+    assert keys == {"three-days-old", "fresh"}

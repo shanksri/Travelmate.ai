@@ -175,6 +175,28 @@ class DraftItinerary(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+SourceStatus = Literal["live", "cached", "stale", "unavailable", "sample"]
+
+
+class DataSource(BaseModel):
+    """Where one set of results came from, so the page can say so.
+
+    - live: searched just now.
+    - cached: a search from earlier, still fresh (under 6 h by default).
+    - stale: the live search failed; an older search, labelled with its age.
+    - unavailable: nothing to show; `detail` says why, `link` lets the
+      traveller search for themselves.
+    - sample: deterministic sample data (TRAVELMATE_PROVIDER=mock), never
+      real prices. Labelled because it was mistaken for real data twice.
+    """
+
+    status: SourceStatus
+    provider: str
+    fetched_at: datetime | None = None
+    detail: str | None = None
+    link: str | None = None
+
+
 class Itinerary(BaseModel):
     destination: str
     start_date: date
@@ -188,6 +210,11 @@ class Itinerary(BaseModel):
     outbound_options: list[FlightLeg] = Field(default_factory=list)
     return_options: list[FlightLeg] = Field(default_factory=list)
     lodging_options: list[LodgingOption] = Field(default_factory=list)
+    # Where each of the above came from. None when that part wasn't searched
+    # (its box unticked, no origin) and on trips planned before these existed.
+    outbound_source: DataSource | None = None
+    return_source: DataSource | None = None
+    lodging_source: DataSource | None = None
     days: list[DayPlan]
     currency: str = DEFAULT_CURRENCY
     total_estimated_cost: float | None = Field(default=None, ge=0)

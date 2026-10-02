@@ -20,7 +20,13 @@ from app.agent.prompts import (
     describe_request,
 )
 from app.agent.state import TravelState
-from app.models.itinerary import DraftItinerary, FlightLeg, Itinerary, LodgingOption
+from app.models.itinerary import (
+    DataSource,
+    DraftItinerary,
+    FlightLeg,
+    Itinerary,
+    LodgingOption,
+)
 from app.providers.base import TravelProvider
 
 # Rough daily-spend-per-person bands in rupees, used only to steer destination
@@ -103,20 +109,27 @@ def build_flight_node(provider: TravelProvider, llm: LLM):
         # ~4 s each, so searching them one after the other doubled the wait.
         with ThreadPoolExecutor(max_workers=2) as pool:
             outbound_search = pool.submit(
-                provider.search_flights,
+                _search_with_source,
+                provider,
+                "flights",
                 origin=request.origin,
                 destination=destination,
                 depart=request.start_date,
                 travelers=request.travelers,
             )
             return_search = pool.submit(
-                provider.search_flights,
+                _search_with_source,
+                provider,
+                "flights",
                 origin=destination,
                 destination=request.origin,
                 depart=request.end_date,
                 travelers=request.travelers,
             )
-            outbound, return_leg = outbound_search.result(), return_search.result()
+            (outbound, outbound_source), (return_leg, return_source) = (
+                outbound_search.result(),
+                return_search.result(),
+            )
         recommendation = llm.complete(
             system=FLIGHT_AGENT_SYSTEM,
             user=json.dumps(
@@ -137,11 +150,14 @@ def build_flight_node(provider: TravelProvider, llm: LLM):
             "flight_results": {
                 "outbound_options": outbound,
                 "return_options": return_leg,
+                "outbound_source": outbound_source,
+                "return_source": return_source,
                 "recommendation": recommendation,
             },
             "messages": [
-                f"flight_agent: {len(outbound)} outbound, {len(return_leg)} return "
-                "option(s) found, recommended a pick for each"
+                f"flight_agent: {len(outbound)} outbound{_status(outbound_source)}, "
+                f"{len(return_leg)} return{_status(return_source)} option(s) found, "
+                "recommended a pick for each"
             ],
         }
 
@@ -160,7 +176,9 @@ def build_hotel_node(provider: TravelProvider, llm: LLM):
                 "messages": ["hotel_agent: skipped (hotels not requested)"],
             }
 
-        options = provider.search_lodging(
+        options, source = _search_with_source(
+            provider,
+            "lodging",
             destination=state["resolved_destination"],
             check_in=request.start_date,
             nights=request.nights,
@@ -179,11 +197,32 @@ def build_hotel_node(provider: TravelProvider, llm: LLM):
             ),
         )
         return {
-            "hotel_results": {"options": options, "recommendation": recommendation},
-            "messages": [f"hotel_agent: {len(options)} option(s) found, recommended one"],
+            "hotel_results": {
+                "options": options,
+                "source": source,
+                "recommendation": recommendation,
+            },
+            "messages": [
+                f"hotel_agent: {len(options)} option(s) found{_status(source)}, recommended one"
+            ],
         }
 
     return node
+
+
+def _search_with_source(
+    provider: TravelProvider, kind: str, **query
+) -> tuple[list[dict], DataSource | None]:
+    """`search_<kind>_with_source` where the provider has it — every real
+    one does — and the plain search, with no source, for a bare test fake."""
+    with_source = getattr(provider, f"search_{kind}_with_source", None)
+    if with_source is not None:
+        return with_source(**query)
+    return getattr(provider, f"search_{kind}")(**query), None
+
+
+def _status(source: DataSource | None) -> str:
+    return f" ({source.status})" if source is not None else ""
 
 
 def _booked_option(options: list[dict], on: date) -> dict | None:
@@ -330,6 +369,9 @@ def build_itinerary_node(provider: TravelProvider, llm: LLM, max_retries: int):
                 outbound_options=_flight_options(flight_results.get("outbound_options", [])),
                 return_options=_flight_options(flight_results.get("return_options", [])),
                 lodging_options=lodging,
+                outbound_source=flight_results.get("outbound_source"),
+                return_source=flight_results.get("return_source"),
+                lodging_source=state["hotel_results"].get("source"),
                 days=draft.days,
                 total_estimated_cost=flight_cost + hotel_cost + activity_cost,
                 notes=draft.notes,

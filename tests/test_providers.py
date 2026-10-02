@@ -43,26 +43,49 @@ def test_attraction_limit_is_clamped(provider):
 
 
 def test_live_provider_serves_real_flights(monkeypatch):
+    from app.models.itinerary import DataSource
     from app.providers.live import LiveTravelProvider
 
     real = [{"carrier": "IX", "total": 6899.0}]
-    monkeypatch.setattr("app.providers.live.search_real_flights", lambda *a, **k: real)
+    live_source = DataSource(status="live", provider="Google Flights")
+    monkeypatch.setattr(
+        "app.providers.live.search_flights_with_source", lambda *a, **k: (real, live_source)
+    )
+    provider = LiveTravelProvider()
 
-    assert LiveTravelProvider().search_flights("Delhi", "Mumbai", date(2026, 10, 10), 1) == real
+    assert provider.search_flights("Delhi", "Mumbai", date(2026, 10, 10), 1) == real
+    assert provider.search_flights_with_source("Delhi", "Mumbai", date(2026, 10, 10), 1) == (
+        real,
+        live_source,
+    )
 
 
 def test_live_provider_returns_no_flights_rather_than_mock_ones_on_failure(monkeypatch):
     """Invented flights shown alongside real ones would be indistinguishable
-    from them, so an API failure means no flights, not fictional ones."""
-    from app.providers.google_flights import GoogleFlightsError
+    from them, so a failed search means no flights, not fictional ones —
+    labelled unavailable, with a link to search for them."""
+    from app.providers import serpapi
     from app.providers.live import LiveTravelProvider
 
-    def boom(*args, **kwargs):
-        raise GoogleFlightsError("SERPAPI_FLIGHTS_API_KEY is not set")
+    monkeypatch.setenv("SERPAPI_FLIGHTS_API_KEY", "fake")
+    monkeypatch.setattr(
+        "app.providers.google_flights.resolve_route", lambda origin, dest: ("DEL", "BOM")
+    )
+    monkeypatch.setattr("app.providers.google_flights.airports_for", lambda code: [code])
 
-    monkeypatch.setattr("app.providers.live.search_real_flights", boom)
+    async def down(params, api_key):
+        raise ConnectionError("network down")
 
-    assert LiveTravelProvider().search_flights("Delhi", "Mumbai", date(2026, 10, 10), 1) == []
+    monkeypatch.setattr(serpapi, "_call_search", down)
+
+    flights, source = LiveTravelProvider().search_flights_with_source(
+        "Delhi", "Mumbai", date(2026, 10, 10), 1
+    )
+
+    assert flights == []
+    assert source.status == "unavailable"
+    assert "network down" in source.detail
+    assert source.link.startswith("https://www.google.com/travel/flights?")
 
 
 def test_live_provider_keeps_mock_data_for_everything_but_flights():

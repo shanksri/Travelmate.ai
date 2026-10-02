@@ -121,6 +121,18 @@ def _fresh_flight_cache():
 
 
 @pytest.fixture(autouse=True)
+def _instant_retries_and_closed_breakers(monkeypatch):
+    """Live sources retry with real waits (1 s, then 3 s) and keep a
+    process-wide circuit breaker. Tests don't wait, and each starts with the
+    breaker closed, so one test's failures can't skip the next test's search."""
+    from app.providers import google_flights
+    from app.providers.resilience import CircuitBreaker
+
+    monkeypatch.setattr(google_flights, "RETRY_DELAYS", (0, 0))
+    monkeypatch.setattr(google_flights, "breaker", CircuitBreaker("Google Flights"))
+
+
+@pytest.fixture(autouse=True)
 def _block_real_network_calls(monkeypatch):
     """app/providers/aviationstack.py and tavily.py call load_dotenv() at
     import time, so real API keys are sitting in os.environ during every test

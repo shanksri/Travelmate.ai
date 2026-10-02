@@ -9,7 +9,7 @@ import pytest
 from conftest import FakeMCPToolResult
 
 from app.models.itinerary import FlightLeg
-from app.providers import google_flights, iata
+from app.providers import iata, serpapi
 from app.providers.google_flights import (
     GoogleFlightsError,
     fetch_flights,
@@ -65,7 +65,7 @@ def fake_search(monkeypatch):
             sent.append(params)
             return result
 
-        monkeypatch.setattr(google_flights, "_call_search", fake_call_search)
+        monkeypatch.setattr(serpapi, "_call_search", fake_call_search)
         return sent
 
     return install
@@ -128,10 +128,20 @@ def test_a_tool_error_raises(fake_search):
 
 
 def test_an_error_in_the_payload_raises(fake_search):
+    fake_search(FakeMCPToolResult({"error": "Something unexpected went wrong"}))
+
+    with pytest.raises(GoogleFlightsError, match="Something unexpected"):
+        fetch_flights(departure_ids="VNS", arrival_ids="COK", outbound_date="2026-10-08")
+
+
+def test_no_results_is_an_empty_answer_not_an_error(fake_search):
+    """Google finding no flights on a route is an answer, not a failure: it
+    mustn't be retried, or count against the source."""
     fake_search(FakeMCPToolResult({"error": "Google Flights hasn't returned any results"}))
 
-    with pytest.raises(GoogleFlightsError, match="hasn't returned any results"):
-        fetch_flights(departure_ids="VNS", arrival_ids="COK", outbound_date="2026-10-08")
+    raw = fetch_flights(departure_ids="VNS", arrival_ids="COK", outbound_date="2026-10-08")
+
+    assert normalize_flights(raw) == []
 
 
 def test_a_transport_failure_becomes_a_google_flights_error(monkeypatch):
@@ -140,7 +150,7 @@ def test_a_transport_failure_becomes_a_google_flights_error(monkeypatch):
     async def boom(params, api_key):
         raise ConnectionError("network down")
 
-    monkeypatch.setattr(google_flights, "_call_search", boom)
+    monkeypatch.setattr(serpapi, "_call_search", boom)
 
     with pytest.raises(GoogleFlightsError, match="network down"):
         fetch_flights(departure_ids="VNS", arrival_ids="COK", outbound_date="2026-10-08")
@@ -249,3 +259,156 @@ def test_search_returns_empty_without_searching_when_a_place_is_unknown(
 
     assert search_flights("Atlantis", "Kochi", date(2026, 10, 8), 1) == []
     assert sent == []  # no quota spent on an impossible search
+
+
+# --- the retry and fallback chain ----------------------------------------------
+
+
+@pytest.fixture
+def searches(monkeypatch):
+    """Scripts the MCP round trip: each call takes the next outcome — a
+    payload dict, or an exception to raise. Records how many searches ran."""
+    monkeypatch.setenv("SERPAPI_FLIGHTS_API_KEY", "fake")
+    script: list = []
+    made: list = []
+
+    async def fake_call_search(params, api_key):
+        made.append(params)
+        outcome = script.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return FakeMCPToolResult(outcome)
+
+    monkeypatch.setattr(serpapi, "_call_search", fake_call_search)
+    return script, made
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    from app.providers import flight_cache
+
+    now = {"t": 2_000_000.0}
+    monkeypatch.setattr(flight_cache.time, "time", lambda: now["t"])
+    return now
+
+
+def _chain():
+    from app.providers.google_flights import fetch_flights_with_fallback
+
+    return fetch_flights_with_fallback(
+        departure_ids="VNS", arrival_ids="COK", outbound_date="2026-10-08", link="L"
+    )
+
+
+def test_a_live_search_is_labelled_live_and_cached(searches, clock):
+    script, made = searches
+    script.append(SAMPLE)
+
+    raw, source = _chain()
+
+    assert raw == SAMPLE and source.status == "live" and source.link == "L"
+    raw, source = _chain()  # the same search again: no second call
+    assert source.status == "cached" and len(made) == 1
+
+
+def test_a_transient_failure_is_retried(searches, clock):
+    script, made = searches
+    script.extend([ConnectionError("blip"), SAMPLE])
+
+    raw, source = _chain()
+
+    assert source.status == "live" and len(made) == 2
+
+
+def test_an_exhausted_quota_is_not_retried_and_skips_later_searches(searches, clock):
+    from app.providers import google_flights
+
+    script, made = searches
+    script.append({"error": "Your account has run out of searches."})
+
+    _, first = _chain()
+    _, second = _chain()  # the breaker is open: no search at all
+
+    assert len(made) == 1
+    assert first.status == "unavailable" and "run out of searches" in first.detail
+    assert second.status == "unavailable" and "skipped after repeated failures" in second.detail
+    assert not google_flights.breaker.allow()
+
+
+def test_a_failure_falls_back_to_an_older_search_labelled_stale(searches, clock):
+    script, made = searches
+    script.append(SAMPLE)
+    _chain()  # cached now
+    clock["t"] += 20 * 3600  # past fresh (6 h), within kept (48 h)
+    script.extend([ConnectionError("down")] * 3)
+
+    raw, source = _chain()
+
+    assert raw == SAMPLE
+    assert source.status == "stale"
+    assert "down" in source.detail
+    assert source.fetched_at is not None
+
+
+def test_with_nothing_kept_a_failure_is_unavailable_with_a_link(searches, clock):
+    script, _ = searches
+    script.extend([ConnectionError("down")] * 3)
+
+    raw, source = _chain()
+
+    assert raw is None
+    assert source.status == "unavailable" and source.link == "L"
+
+
+def test_search_flights_with_source_never_raises_and_links_google_flights(
+    searches, clock, monkeypatch
+):
+    from app.providers import google_flights
+
+    monkeypatch.setattr(google_flights, "resolve_route", lambda o, d: ("VNS", "COK"))
+    monkeypatch.setattr(google_flights, "airports_for", lambda code: [code])
+    script, _ = searches
+    script.extend([ConnectionError("down")] * 3)
+
+    flights, source = google_flights.search_flights_with_source(
+        "Varanasi", "Kochi", date(2026, 10, 8), 1
+    )
+
+    assert flights == []
+    assert source.status == "unavailable"
+    assert "Varanasi" in source.link and "Kochi" in source.link and "2026-10-08" in source.link
+
+
+def test_an_unmatched_place_is_unavailable_without_searching(searches, monkeypatch):
+    from app.providers import google_flights
+
+    monkeypatch.setattr(google_flights, "resolve_route", lambda o, d: ("VNS", None))
+    _, made = searches
+
+    flights, source = google_flights.search_flights_with_source(
+        "Varanasi", "Kerala and Tamil Nadu", date(2026, 10, 8), 1
+    )
+
+    assert flights == [] and made == []
+    assert "Kerala and Tamil Nadu" in source.detail
+
+
+def test_serpapis_real_invalid_key_message_opens_the_breaker(searches, clock):
+    """The exact wording seen live. Matching only "invalid api key" missed it,
+    so the breaker stayed closed and every search tried the bad key again."""
+    from app.providers import google_flights
+
+    script, made = searches
+    script.append(
+        {
+            "error": "Error: Invalid SerpApi API key. Check the key in the request path "
+            "or Authorization header, or in SERPAPI_API_KEY for stdio hosts."
+        }
+    )
+
+    _chain()
+    _, second = _chain()
+
+    assert len(made) == 1
+    assert "skipped after repeated failures" in second.detail
+    assert not google_flights.breaker.allow()

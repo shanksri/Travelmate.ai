@@ -269,8 +269,58 @@ function renderFlightOption(flight, booked) {
 
 // Cheapest and fastest are picked here rather than server-side so both rows
 // come from the one option list the itinerary already carries.
-function renderFlightTable(label, options, booked) {
-  if (!options || !options.length) return "";
+// --- where the data came from --------------------------------------------------
+// Every flight and hotel result carries a `source` (app/models/itinerary.py
+// DataSource): live, cached, stale, unavailable or sample. Shown as one line,
+// so sample or old data can't pass for live prices.
+
+function timeAgo(iso) {
+  const minutes = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+  if (minutes < 2) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  return `${hours} h ago`;
+}
+
+function sourceLink(source) {
+  return source.link
+    ? ` <a href="${escapeHtml(source.link)}" target="_blank" rel="noopener">Search ${escapeHtml(source.provider)}</a>`
+    : "";
+}
+
+function sourceLine(source) {
+  if (!source) return "";
+  const provider = escapeHtml(source.provider);
+  const when = source.fetched_at ? timeAgo(source.fetched_at) : "";
+  const reason = escapeHtml(source.detail || "");
+  switch (source.status) {
+    case "live":
+      return `<p class="source-line">Live from ${provider}</p>`;
+    case "cached":
+      return `<p class="source-line">From ${provider}, checked ${when}</p>`;
+    case "stale":
+      return `<p class="source-line warn" title="${reason}">Couldn't refresh just now, so these are ${provider} prices from ${when}.${sourceLink(source)}</p>`;
+    case "unavailable":
+      return `<p class="source-line warn" title="${reason}">Couldn't get results from ${provider} right now.${sourceLink(source)}</p>`;
+    case "sample":
+      return '<p class="source-line warn">Sample data, not real prices</p>';
+    default:
+      return "";
+  }
+}
+
+// A leg with no options: say why instead of leaving a gap.
+function renderNoFlights(label, source) {
+  if (!source || source.status === "sample") return "";
+  const line =
+    source.status === "unavailable"
+      ? sourceLine(source)
+      : `<p class="source-line">${escapeHtml(source.provider)} has no flights for this route on this date.${sourceLink(source)}</p>`;
+  return `<div class="card"><h3>${escapeHtml(label)}</h3>${line}</div>`;
+}
+
+function renderFlightTable(label, options, booked, source) {
+  if (!options || !options.length) return renderNoFlights(label, source);
 
   const route = options[0].origin && options[0].destination
     ? ` — ${escapeHtml(options[0].origin)} → ${escapeHtml(options[0].destination)}`
@@ -293,6 +343,7 @@ function renderFlightTable(label, options, booked) {
   return `
     <div class="card">
       <h3>${escapeHtml(label)}${route}</h3>
+      ${sourceLine(source)}
       <table class="flight-table">
         <thead>
           <tr><th></th><th>Flight</th><th class="price-col">Price</th></tr>
@@ -451,18 +502,21 @@ function renderTrip(trip) {
       ${trip.summary ? `<p class="summary">${escapeHtml(trip.summary)}</p>` : ""}
     </div>
 
-    ${renderFlightTable("Outbound options", it.outbound_options, it.outbound_flight)}
-    ${renderFlightTable("Return options", it.return_options, it.return_flight)}
+    ${renderFlightTable("Outbound options", it.outbound_options, it.outbound_flight, it.outbound_source)}
+    ${renderFlightTable("Return options", it.return_options, it.return_flight, it.return_source)}
 
     ${
       it.lodging_options.length
         ? `<div class="card">
             <h3>Where to stay</h3>
+            ${sourceLine(it.lodging_source)}
             <ul class="hotel-list">
               ${it.lodging_options.map((h, i) => renderHotelItem(h, i === 0)).join("")}
             </ul>
           </div>`
-        : ""
+        : it.lodging_source && it.lodging_source.status === "unavailable"
+          ? `<div class="card"><h3>Where to stay</h3>${sourceLine(it.lodging_source)}</div>`
+          : ""
     }
 
     <div class="card">
