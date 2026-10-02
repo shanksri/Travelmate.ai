@@ -935,6 +935,99 @@ Same pattern as revisions (Step 30): the instructions are right, and
 `gpt-4o-mini` can't reliably route across two regions. Using `gpt-4o` for
 the itinerary is the user's call, because of the cost.
 
+
+## Phase 11 — Real data, honestly labelled
+
+### Step 40 · Docker as the way to run; the flights key (`470312c`, 2026-10-02)
+
+**"Is flights working?" No, for two reasons:**
+
+- The server was in **sample-data mode** (`TRAVELMATE_PROVIDER=mock`). Every
+  flight it had been showing (Northwind, Meridian Air) was sample data.
+- Even in live mode it would have found nothing. The key was saved as
+  `SerpAPI_FLIGHTS_API_KEY`, but the code read `SERPAPI_API_KEY`.
+
+**The fix for the key:** the code now reads `SERPAPI_FLIGHTS_API_KEY`, pairing
+with `SERPAPI_HOTEL_API_KEY` (two SerpApi accounts). It still accepts the old
+name. `.env` was renamed to upper case, which matters on Linux, and switched
+to `live`. The account check (free) showed 247 of **250** searches left: the
+free plan is 250 a month, not the 100 assumed since Step 25.
+
+**Windows Smart App Control** then switched itself from evaluation to
+enforcing and blocked `uuid_utils`' compiled extension, which `langchain-core`
+and `langsmith` import. Neither the app nor the tests could start from the
+`.venv`. Turning it off is the user's security decision, so the project moved
+to Docker instead, which Smart App Control doesn't check:
+
+- `api` reads `.env`. Before, it passed only the OpenAI key and defaulted
+  to `gpt-4`, which can't do structured outputs. The source is mounted and
+  uvicorn runs with `--reload`.
+- A new `dev` image stage and `tests` service run the suite. The dev install
+  runs from a folder holding only `pyproject.toml`; with `app/` and
+  `frontend/` beside it, setuptools refused to guess the package.
+- The preview button runs `docker compose up api`.
+
+Verified: 299 tests in Docker, and the trip history still in Postgres (33
+trips). One live search found 8 real flights, Varanasi to Kochi.
+
+### Step 41 · Retry and fallback chain for flights (`d74ac50`, 2026-10-02)
+
+Sketched as a diagram first, then built. For each leg:
+
+1. A **fresh cached search** (under 6 h).
+2. A **live search**, retried twice (after 1 s, then 3 s) only on timeouts and
+   dropped connections.
+3. An **older search**, kept up to 48 h, labelled stale.
+4. **Unavailable**: a reason, and a link to search Google Flights.
+
+It never falls back to sample data.
+
+- `resilience.py`: `with_retries` and `CircuitBreaker`. An invalid key or
+  exhausted quota opens the breaker at once; three failures in a row do too.
+  While it's open (15 min), searches skip straight to the fallback instead of
+  each waiting out a timeout.
+- `serpapi.py`: the SerpApi search, moved out of the flights client, sorting
+  failures into transient, account problem and other. "No results" is an
+  empty answer, not a failure.
+- The cache keeps searches past fresh (`lookup` returns any kept entry with
+  its age; `get` is still fresh only) and prunes at the stale limit.
+- Every result carries a `DataSource` (live / cached / stale / unavailable /
+  sample), saved per leg and for lodging and printed above each table. Mock
+  data now reads **"Sample data, not real prices"**: it had been mistaken
+  for real fares twice.
+
+**Found live:** SerpApi's real bad-key message is "Invalid **SerpApi** API
+key", so matching "invalid api key" missed it. The breaker stayed closed and
+every search retried the bad key. With the real wording matched, the first
+bad-key search opens the breaker. Also verified: a real search came back
+"live" (5.7 s), then "cached" (0.0 s).
+
+### Step 42 · Live hotels from Google Hotels (`39bfd56`, 2026-10-02)
+
+One Google Hotels search per trip, via SerpApi, on the hotel account: the
+destination, the stay's dates and the party size, in rupees.
+
+- **Offered:** priced hotels rated at least 3.5★, cheapest first, at most 5.
+  The first is booked by default, the same rule as the sample data; the
+  rating floor keeps "cheapest" from meaning a poorly reviewed place.
+- **Same chain as flights,** now one shared `fetch_with_fallback`, with a
+  breaker per account.
+- **The Google Maps fallback from the sketch was dropped:** Maps Grounding
+  Lite results may not be stored, and hotels are saved with every trip. The
+  hotel chain is cache → live → stale → unavailable.
+
+**Verified live:** Kochi, 27–30 Oct, 2 adults returned 18 properties. 5 were
+kept (₹2,357–3,385 a night, from a 4.5★ homestay), in 5.4 s, then from the
+cache. Through the page with Flights and Hotels ticked:
+
+- Outbound: "From Google Flights, checked 7 min ago", 1 stop, ₹21,810 for two.
+- Return: "Live from Google Flights", ₹25,750.
+- Hotels: "From Google Hotels, checked just now".
+- Estimated total: ₹84,130.
+
+**Limit:** one hotel search for the whole trip, so a multi-city trip gets
+hotels for the destination as a whole, not per city.
+
 ---
 
 ## Where things stand
@@ -945,11 +1038,12 @@ the itinerary is the user's call, because of the cost.
 | Persistence | ✅ Postgres, append-only version history per `thread_id` |
 | Revisions | ✅ "Change this plan" box, routed to flights, hotel and/or days; refused whole with a reason when any part cannot be done; `gpt-4o` |
 | Frontend | ✅ Dark theme, free-text prompt, rupee rendering, cheapest/fastest flight table per leg, Flights/Hotels/Restaurants checkboxes, optional date pickers, revise box — no history browser |
-| Travel data | ⚠️ **Flights are real** under `TRAVELMATE_PROVIDER=live` (Google Flights via SerpApi's MCP server, 100 searches/month, cached 6h). Lodging, attractions and weather are **still mock**. The `.env` default is still `mock` |
+| Travel data | ✅ **Flights and hotels are real** under `TRAVELMATE_PROVIDER=live` (Google Flights and Google Hotels via SerpApi, two accounts, 250 searches/month each), each through a retry and fallback chain and labelled with where it came from. Attractions and weather are still sample data. `.env` is on `live` |
 | MCP | ✅ Three clients (SerpApi — flights; Google Maps Grounding Lite — places and routes; Tavily — standalone), two servers (AviationStack — now keyless, weather) |
 | Currency | ✅ Rupee-native, with legacy USD trips preserved |
-| Tests | ✅ 298 passing, `ruff` clean |
+| Tests | ✅ 330 passing in Docker, `ruff` clean |
 | GitHub | ✅ Pushed to `shanksri/Travelmate.ai` (public) over SSH |
+| Running it | Docker (`docker compose up -d api`; tests with `docker compose run --rm tests`). Windows Smart App Control blocks the local `.venv` |
 
 ---
 
@@ -972,7 +1066,7 @@ to a minute.
 | 3 | **Keep MCP connections open; run parallel work concurrently.** One long-lived session per MCP server, reused across calls, instead of a new connection and handshake every time. | Every Maps and flight call paid the connection cost. | ✅ Done: Step 37. The async-throughout part moved to #2 |
 | 4 | **Structured outputs.** Every JSON call passes its exact schema to OpenAI (`json_schema`, strict), instead of JSON mode, then hand checks, then retry. | Several fixed bugs were format failures, and each retry costs a full LLM call. | ✅ Done: Step 38 |
 | 5 | **Evaluation suite and tracing.** The live checks done by hand become a fixed prompt set with expected outcomes, run against the real model on demand. Examples: "Ladakh → declined", "Kerala and Tamil Nadu → one destination", "houseboat → only day 3 changed". LangSmith tracing is already configured in `.env` but not connected. | Prompt and model changes stop being guesswork; per-plan cost becomes visible. | Planned, before the next big prompt change |
-| 6 | **One tools layer.** Flights, hotels, places, routes and weather each get an interface with sample and live implementations chosen by config. | Real hotels and real weather become small changes. The weather MCP server built in Step 19 is still unused by the planner. | Planned, with real hotels |
+| 6 | **One tools layer.** Flights, hotels, places, routes and weather each get an interface with sample and live implementations chosen by config. | Real hotels and real weather become small changes. The weather MCP server built in Step 19 is still unused by the planner. | Partly done: flights and hotels share one fallback chain and report a `DataSource` (Steps 41–42). Weather is still to come |
 
 The single `app.js` file and the versioned-JSON store with a hand-written
 migration are fine at this size and are not planned to change.
@@ -983,8 +1077,8 @@ migration are fine at this size and are not planned to change.
   inside the existing parser call. Deferred by the user.
 - **Budget check.** Compare the estimated total with the stated budget in
   code, not with an LLM agent. Deferred by the user.
-- **Real hotel data.** Google Hotels via SerpApi (`SERPAPI_HOTEL_API_KEY` is
-  already in `.env`); lodging is still sample data.
+- ~~Real hotel data~~: done in Step 42. Next for hotels: one search per city
+  on multi-city trips.
 - **Real weather in the itinerary.** Use the existing weather client or MCP
   server instead of sample weather. Forecasts only reach about two weeks
   ahead; later trips would use typical weather.
