@@ -263,7 +263,7 @@ no third-party keys and the tests never touch a network.
 
 `TRAVELMATE_PROVIDER=live` serves **live flight fares from Google Flights**,
 via SerpApi's hosted MCP server, and mock data for everything else — lodging,
-attractions and weather still have no real source. Needs `SERPAPI_API_KEY`.
+attractions and weather still have no real source. Needs `SERPAPI_FLIGHTS_API_KEY`.
 
 ### MCP sessions are shared
 
@@ -577,14 +577,30 @@ suite try to open a real database connection.
 ## Docker
 
 ```bash
-docker compose up --build
+docker compose up -d --build api      # the app on http://localhost:8000
+docker compose run --rm tests         # the test suite
+docker compose run --rm tests ruff check .
 ```
 
-Brings up two services: `db` (Postgres 16, host port **5433** — not 5432, in
-case something else on your machine already uses it) and `api` (built from
-the `Dockerfile`, `TRAVELMATE_STORE=postgres` inside the container talking to
-`db:5432` on Docker's internal network). Requires `OPENAI_API_KEY` in your
-shell or `.env`.
+**On a Windows machine with Smart App Control on, this is the way to run the
+project.** Smart App Control blocks compiled Python extensions it doesn't
+recognise. It blocked `uuid_utils`, which `langchain-core` and `langsmith`
+import, so neither the app nor the tests can start from a local `.venv`.
+Linux containers aren't checked by it.
+
+- `db`: Postgres 16 on host port **5433**, not 5432, because something else on
+  this machine already uses 5432.
+- `api`: reads keys and settings from `.env`, with
+  `TRAVELMATE_STORE=postgres` talking to `db:5432` on Docker's internal
+  network. The source is mounted and uvicorn runs with `--reload`, so code
+  edits show up without a rebuild. After changing `.env`, run
+  `docker compose up -d --force-recreate api`; a plain restart keeps the old
+  values.
+- `tests` (profile `test`): the `dev` image stage, which adds pytest and
+  ruff, with the whole project mounted. It needs no keys.
+
+The desktop app's preview button (`.claude/launch.json`) runs
+`docker compose up api`.
 
 To run the API on your host instead while still using a dockerized database:
 `docker compose up db` (or add `-d` to run it in the background), then set

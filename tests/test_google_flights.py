@@ -57,7 +57,7 @@ SAMPLE = {
 @pytest.fixture
 def fake_search(monkeypatch):
     """Replaces the MCP round trip; records the params each search sent."""
-    monkeypatch.setenv("SERPAPI_API_KEY", "fake")
+    monkeypatch.setenv("SERPAPI_FLIGHTS_API_KEY", "fake")
     sent = []
 
     def install(result):
@@ -75,10 +75,20 @@ def fake_search(monkeypatch):
 
 
 def test_fetch_requires_an_api_key(monkeypatch):
+    monkeypatch.delenv("SERPAPI_FLIGHTS_API_KEY", raising=False)
     monkeypatch.delenv("SERPAPI_API_KEY", raising=False)
 
-    with pytest.raises(GoogleFlightsError, match="not set"):
+    with pytest.raises(GoogleFlightsError, match="SERPAPI_FLIGHTS_API_KEY is not set"):
         fetch_flights(departure_ids="VNS", arrival_ids="COK", outbound_date="2026-10-08")
+
+
+def test_the_older_single_key_name_still_works(monkeypatch):
+    from app.providers.google_flights import _api_key
+
+    monkeypatch.delenv("SERPAPI_FLIGHTS_API_KEY", raising=False)
+    monkeypatch.setenv("SERPAPI_API_KEY", "old-name")
+
+    assert _api_key() == "old-name"
 
 
 def test_fetch_sends_a_one_way_rupee_search(fake_search):
@@ -125,7 +135,7 @@ def test_an_error_in_the_payload_raises(fake_search):
 
 
 def test_a_transport_failure_becomes_a_google_flights_error(monkeypatch):
-    monkeypatch.setenv("SERPAPI_API_KEY", "fake")
+    monkeypatch.setenv("SERPAPI_FLIGHTS_API_KEY", "fake")
 
     async def boom(params, api_key):
         raise ConnectionError("network down")

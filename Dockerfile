@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12-slim AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -19,3 +19,15 @@ USER travelmate
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+
+# Adds the test and lint tools. Used by the `tests` service in
+# docker-compose.yml, which mounts the project over /srv.
+FROM runtime AS dev
+USER root
+# From a directory holding only pyproject.toml, like the install above: with
+# app/ and frontend/ beside it, setuptools refuses to guess which is the
+# package ("Multiple top-level packages discovered in a flat-layout").
+RUN mkdir /tmp/deps && cp /srv/pyproject.toml /tmp/deps/ \
+    && pip install "/tmp/deps[dev]" && rm -rf /tmp/deps
+USER travelmate

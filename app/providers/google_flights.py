@@ -40,9 +40,16 @@ class GoogleFlightsError(RuntimeError):
 
 
 def _api_key(api_key: str | None = None) -> str:
-    key = api_key or os.environ.get("SERPAPI_API_KEY")
+    # SERPAPI_FLIGHTS_API_KEY pairs with SERPAPI_HOTEL_API_KEY: flights and
+    # hotels use separate SerpApi accounts, each with its own monthly quota.
+    # SERPAPI_API_KEY is the older single-key name, still accepted.
+    key = (
+        api_key
+        or os.environ.get("SERPAPI_FLIGHTS_API_KEY")
+        or os.environ.get("SERPAPI_API_KEY")
+    )
     if not key:
-        raise GoogleFlightsError("SERPAPI_API_KEY is not set")
+        raise GoogleFlightsError("SERPAPI_FLIGHTS_API_KEY is not set")
     return key.strip()
 
 

@@ -1,3 +1,18 @@
+# Runs the whole project in Linux containers.
+#
+# This is the way to run it on a Windows machine where Smart App Control is
+# on: it blocks compiled Python extensions it doesn't recognise (seen with
+# uuid_utils, which langchain-core and langsmith need), so the app can't
+# start from a local .venv there. Containers aren't checked by it.
+#
+#   docker compose up -d api           the app on http://localhost:8000, live-reloading
+#   docker compose run --rm tests      the test suite
+#   docker compose run --rm tests ruff check .
+#
+# The api service reads .env for keys and settings. After changing .env,
+# recreate it — a plain restart keeps the old values:
+#   docker compose up -d --force-recreate api
+
 services:
   db:
     image: postgres:16-alpine
@@ -20,20 +35,27 @@ services:
       retries: 10
 
   api:
-    build: .
+    build:
+      context: .
+      target: runtime
     ports:
       - "8000:8000"
+    # Keys (OpenAI, SerpApi, Google Maps) and settings come from .env, the
+    # same file a local run uses. It stays out of the image (.dockerignore).
+    env_file: .env
     environment:
-      OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY in your shell or .env}
-      TRAVELMATE_MODEL: ${TRAVELMATE_MODEL:-gpt-4}
-      TRAVELMATE_TEMPERATURE: ${TRAVELMATE_TEMPERATURE:-0.3}
-      TRAVELMATE_PROVIDER: ${TRAVELMATE_PROVIDER:-mock}
-      TRAVELMATE_LOG_LEVEL: ${TRAVELMATE_LOG_LEVEL:-INFO}
       TRAVELMATE_STORE: postgres
       # "db" is the service name above, resolved on Docker's internal network
-      # — not the same host as TRAVELMATE_DATABASE_URL in .env.example, which
-      # is written for running the api outside Docker.
+      # — not the localhost:5433 address .env uses for running outside Docker.
       TRAVELMATE_DATABASE_URL: postgresql+psycopg://travelmate:travelmate@db:5432/travelmate
+    # The source is mounted over the image's copy and uvicorn reloads on
+    # change, so edits show up without a rebuild. Rebuild only when
+    # pyproject.toml's dependencies change.
+    volumes:
+      - ./app:/srv/app
+      - ./frontend:/srv/frontend
+      - ./scripts:/srv/scripts
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     depends_on:
       db:
         condition: service_healthy
@@ -42,6 +64,19 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+  tests:
+    build:
+      context: .
+      target: dev
+    # The whole project, so tests/ and pyproject.toml's pytest settings are
+    # there. No env_file: tests run on the in-memory store and mock provider
+    # (tests/conftest.py), and never need a key.
+    volumes:
+      - .:/srv
+    working_dir: /srv
+    command: ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+    profiles: ["test"]
 
 volumes:
   pgdata:

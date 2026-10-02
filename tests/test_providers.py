@@ -58,7 +58,7 @@ def test_live_provider_returns_no_flights_rather_than_mock_ones_on_failure(monke
     from app.providers.live import LiveTravelProvider
 
     def boom(*args, **kwargs):
-        raise GoogleFlightsError("SERPAPI_API_KEY is not set")
+        raise GoogleFlightsError("SERPAPI_FLIGHTS_API_KEY is not set")
 
     monkeypatch.setattr("app.providers.live.search_real_flights", boom)
 

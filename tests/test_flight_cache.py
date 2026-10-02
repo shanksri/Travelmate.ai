@@ -117,7 +117,7 @@ class _FakeMCP(list):
 
 @pytest.fixture
 def mcp_calls(monkeypatch):
-    monkeypatch.setenv("SERPAPI_API_KEY", "fake")
+    monkeypatch.setenv("SERPAPI_FLIGHTS_API_KEY", "fake")
     calls = _FakeMCP()
 
     async def fake_call_search(params, api_key):

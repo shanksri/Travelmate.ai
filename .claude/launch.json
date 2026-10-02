@@ -3,10 +3,10 @@
   "configurations": [
     {
       "name": "travelmate-api",
-      "runtimeExecutable": ".venv/Scripts/python.exe",
-      "runtimeArgs": ["scripts/run_server.py"],
+      "runtimeExecutable": "docker",
+      "runtimeArgs": ["compose", "up", "api"],
       "port": 8000,
-      "autoPort": true
+      "autoPort": false
     }
   ]
 }
