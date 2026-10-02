@@ -1028,20 +1028,95 @@ cache. Through the page with Flights and Hotels ticked:
 **Limit:** one hotel search for the whole trip, so a multi-city trip gets
 hotels for the destination as a whole, not per city.
 
+
+### Step 43 · One orchestrator (`9cc5117`, 2026-10-02)
+
+Future plans #2. Only trip planning ran as a LangGraph graph; routing the
+prompt box, revisions and per-city places were hand-written Python beside it.
+
+- **Ask graph:** `interpret`, then branch to `places`, `route` or
+  `prepare_trip`. The trip branch is the planner's own steps, ending in a new
+  `package_trip` step, then one `city_places` step per city via a LangGraph
+  `Send` fan-out (only with Restaurants ticked). That replaced the thread
+  pool and `search_places_many`, which was deleted. Probed in Docker first:
+  three fan-out steps ran together, all done at 0.31 s.
+- **Trip graph:** the same steps from a shared builder, so `/trips/plan` and
+  the CLI run exactly what the prompt box runs.
+- **Revision graph:** `route_change` → `apply_picks` → `revise_days` (only
+  when the days change) → `package_revision`. Any step can end it with a
+  reason in `declined`. The existing revision tests, which pin the exact
+  sequence of LLM calls, passed unchanged.
+- `apply_page_choices` holds the checkbox, date and no-destination rules in
+  one place for the planner and the graph.
+- Every request's trace now starts with the routing step
+  ("interpreter: read as a trip request").
+
+### Step 44 · Streaming (`1e6a954`, 2026-10-02)
+
+Future plans #1. `POST /jobs` starts the ask graph on a server thread and
+returns a job id at once. `GET /jobs/{id}/events` streams Server-Sent Events,
+in this order:
+
+1. status lines;
+2. flights and hotels as they're found;
+3. each day the moment the AI finishes it;
+4. the saved trip;
+5. each city's places.
+
+- **Days as written:** the itinerary call streams the LLM's output, and
+  `stream_json.DayStreamer` picks each finished day out of the partial JSON
+  (string-, escape- and brace-aware). A rejected attempt sends `days_reset`.
+- **Jobs outlive the tab:** the job id goes in the page URL, a reload
+  reconnects and replays, and the trip is saved before it's announced. Jobs
+  are kept in the process for an hour; an unknown job (after a restart) is
+  reported and the URL cleared.
+- **One wording for errors:** `describe_error` serves both the HTTP
+  endpoints and job `error` events.
+- `POST /ask` stays as the blocking version of the same graph.
+
+**Found by streaming — a regression from Step 38:** with the plain strict
+schema, gpt-4o-mini often ended the `days` array after **one day**. In
+diagnostics that was 1–3 answers in 4, and 3 in 3 with streaming off; one
+plan failed after three tries. The retry loop had been hiding it, at the
+cost of 8–10 s per retry. Plain JSON mode gave 4 of 4, so it was the
+schema. The fix keeps strict mode and requires **exactly** the trip's day
+count (`draft_itinerary_for(n)`: `minItems` = `maxItems` = n), for planning
+and revisions: 6 of 6 complete. Rejected attempts are now logged with their
+reason.
+
+**Measured live** (Varanasi → Kochi, 3 nights, 2 people, flights, hotels and
+restaurants, through the page):
+
+| | Time |
+|---|---|
+| Hotels shown | 4.4 s |
+| Flights shown | 6.4 s |
+| Day 1 | 10.8 s, then one day every 3–5 s |
+| Full trip (saved) | 24.9 s |
+| Restaurants, done | 28.2 s |
+
+Before streaming, nothing showed until the end. The same run before the
+day-count fix took 37.8 s, because of a retry. Also verified through the
+page:
+
+- a reload mid-job reattached and finished;
+- an unknown job id showed its message and cleared the URL;
+- a places request answered in 5 s.
+
 ---
 
 ## Where things stand
 
 | Area | State |
 |---|---|
-| Agent pipeline | ✅ 5 nodes, parallel flight/hotel, strict-schema structured outputs, validated itinerary with retries |
+| Agent pipeline | ✅ Every request is a LangGraph graph: ask (routing → trip / places / route, per-city fan-out), trip, revision. Strict schemas with exact day counts; streamed to the page as it runs |
 | Persistence | ✅ Postgres, append-only version history per `thread_id` |
 | Revisions | ✅ "Change this plan" box, routed to flights, hotel and/or days; refused whole with a reason when any part cannot be done; `gpt-4o` |
 | Frontend | ✅ Dark theme, free-text prompt, rupee rendering, cheapest/fastest flight table per leg, Flights/Hotels/Restaurants checkboxes, optional date pickers, revise box — no history browser |
 | Travel data | ✅ **Flights and hotels are real** under `TRAVELMATE_PROVIDER=live` (Google Flights and Google Hotels via SerpApi, two accounts, 250 searches/month each), each through a retry and fallback chain and labelled with where it came from. Attractions and weather are still sample data. `.env` is on `live` |
 | MCP | ✅ Three clients (SerpApi — flights; Google Maps Grounding Lite — places and routes; Tavily — standalone), two servers (AviationStack — now keyless, weather) |
 | Currency | ✅ Rupee-native, with legacy USD trips preserved |
-| Tests | ✅ 330 passing in Docker, `ruff` clean |
+| Tests | ✅ 348 passing in Docker, `ruff` clean |
 | GitHub | ✅ Pushed to `shanksri/Travelmate.ai` (public) over SSH |
 | Running it | Docker (`docker compose up -d api`; tests with `docker compose run --rm tests`). Windows Smart App Control blocks the local `.venv` |
 
@@ -1061,8 +1136,8 @@ to a minute.
 
 | # | Plan | Why | Status |
 |---|---|---|---|
-| 1 | **Stream progress and results.** A plan request returns a job id at once; the server streams events ("flights found", then each day as it's written, then restaurants) over SSE. | Total time barely changes, but the first content appears in seconds instead of ~25 s, and closing the tab no longer loses the work. | Planned, with #2 |
-| 2 | **One orchestrator.** /ask becomes a graph with a routing step, then trip, places or route branches. Revisions become a small graph of their own. Per-city places become a LangGraph fan-out. | Parallelism, tracing and streaming in one place. Budget check and guardrails slot in as extra steps. Includes making endpoints, LLM calls and the graph async, moved here from #3. | Planned |
+| 1 | **Stream progress and results.** A plan request returns a job id at once; the server streams events ("flights found", then each day as it's written, then restaurants) over SSE. | Total time barely changes, but the first content appears in seconds instead of ~25 s, and closing the tab no longer loses the work. | ✅ Done: Step 44 (hotels shown at 4.4 s) |
+| 2 | **One orchestrator.** /ask becomes a graph with a routing step, then trip, places or route branches. Revisions become a small graph of their own. Per-city places become a LangGraph fan-out. | Parallelism, tracing and streaming in one place. Budget check and guardrails slot in as extra steps. Includes making endpoints, LLM calls and the graph async, moved here from #3. | ✅ Done: Step 43. Endpoints and LLM calls are still synchronous (threads); not needed for one user |
 | 3 | **Keep MCP connections open; run parallel work concurrently.** One long-lived session per MCP server, reused across calls, instead of a new connection and handshake every time. | Every Maps and flight call paid the connection cost. | ✅ Done: Step 37. The async-throughout part moved to #2 |
 | 4 | **Structured outputs.** Every JSON call passes its exact schema to OpenAI (`json_schema`, strict), instead of JSON mode, then hand checks, then retry. | Several fixed bugs were format failures, and each retry costs a full LLM call. | ✅ Done: Step 38 |
 | 5 | **Evaluation suite and tracing.** The live checks done by hand become a fixed prompt set with expected outcomes, run against the real model on demand. Examples: "Ladakh → declined", "Kerala and Tamil Nadu → one destination", "houseboat → only day 3 changed". LangSmith tracing is already configured in `.env` but not connected. | Prompt and model changes stop being guesswork; per-plan cost becomes visible. | Planned, before the next big prompt change |
