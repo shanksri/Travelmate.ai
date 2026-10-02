@@ -670,8 +670,10 @@ Linux containers aren't checked by it.
 - `tests` (profile `test`): the `dev` image stage, which adds pytest and
   ruff, with the whole project mounted. It needs no keys.
 
-The desktop app's preview button (`.claude/launch.json`) runs
-`docker compose up api`.
+The desktop app's preview button (`.claude/launch.json`) attaches to the
+app already running at `http://localhost:8000` rather than starting one.
+Start the container first with `docker compose up -d api`. A preview that
+tried to start its own copy was refused while the container held the port.
 
 To run the API on your host instead while still using a dockerized database:
 `docker compose up db` (or add `-d` to run it in the background), then set
