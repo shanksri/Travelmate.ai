@@ -1,18 +1,32 @@
-"""`answer_prompt` sends each request where the parser says it belongs.
-Google Maps is faked at the module boundary, so no MCP call is made."""
+"""The ask graph end to end, through `answer_prompt`: the sentence is routed
+to a trip, places or a route, and a trip that asked for places gets one
+parallel lookup per city. The LLM is scripted (FakeLLM), travel data is the
+mock provider, and Google Maps is faked at the module boundary — no network.
+"""
 
 import json
 from datetime import date
 
 import pytest
-from conftest import FakeLLM, sample_planned_trip
+from conftest import FakeLLM
 
 from app.agent import assistant
 from app.agent.assistant import answer_prompt
-from app.agent.prompts import PARSE_REQUEST_SYSTEM
+from app.agent.prompt_parser import PromptParseError
+from app.agent.prompts import (
+    FINAL_RESPONSE_AGENT_SYSTEM,
+    FLIGHT_AGENT_SYSTEM,
+    HOTEL_AGENT_SYSTEM,
+    ITINERARY_AGENT_SYSTEM,
+    PARSE_REQUEST_SYSTEM,
+)
 from app.core.config import Settings
-from app.models.itinerary import DayPlan
 from app.models.maps import PlaceLink, PlacesAnswer, RouteAnswer
+from app.providers import google_maps
+from app.providers.google_maps import GoogleMapsError
+from app.providers.mock import MockTravelProvider
+
+START, END = date(2027, 1, 10), date(2027, 1, 12)
 
 
 @pytest.fixture
@@ -20,18 +34,17 @@ def settings() -> Settings:
     return Settings(model="gpt-4o-mini", max_itinerary_retries=2)
 
 
-def _parse_llm(**fields) -> FakeLLM:
-    payload = {"intent": "trip", "destination": None, "origin": None} | fields
-    return FakeLLM(by_system={PARSE_REQUEST_SYSTEM: [json.dumps(payload)]})
-
-
 @pytest.fixture
-def fake_maps(monkeypatch):
-    seen = {}
+def maps(monkeypatch):
+    """Records what was asked of Google Maps; per-query answers can be set
+    with `maps["answer"] = callable(query)`."""
+    seen: dict = {"queries": []}
 
     def search_places(query):
-        seen["places"] = query
-        return PlacesAnswer(query=query, summary="Dalma [0].", places=[PlaceLink(index=0)])
+        seen["queries"].append(query)
+        if "answer" in seen:
+            return seen["answer"](query)
+        return PlacesAnswer(query=query, summary=f"About {query} [0].", places=[PlaceLink(index=0)])
 
     def compute_route(origin, destination, travel_mode="DRIVE"):
         seen["route"] = (origin, destination, travel_mode)
@@ -39,239 +52,206 @@ def fake_maps(monkeypatch):
             origin=origin, destination=destination, travel_mode=travel_mode, maps_url="u"
         )
 
-    monkeypatch.setattr(assistant.google_maps, "search_places", search_places)
-    monkeypatch.setattr(assistant.google_maps, "compute_route", compute_route)
+    monkeypatch.setattr(google_maps, "search_places", search_places)
+    monkeypatch.setattr(google_maps, "compute_route", compute_route)
     return seen
 
 
-def test_a_places_request_goes_to_google_maps(fake_maps, settings):
-    llm = _parse_llm(intent="places", places_query="best restaurants in Bhubaneswar")
+def _parse(**fields) -> str:
+    return json.dumps({"intent": "trip", "destination": None, "origin": None} | fields)
 
-    answer = answer_prompt("best places to eat in bhuvneshwar", llm=llm, settings=settings)
+
+def _days(cities: list[str]) -> str:
+    return json.dumps(
+        {
+            "notes": [],
+            "days": [
+                {
+                    "day": i + 1,
+                    "date": date.fromordinal(START.toordinal() + i).isoformat(),
+                    "summary": f"Day {i + 1} in {city}",
+                    "city": city,
+                    "activities": [{"time": "09:00", "title": f"Walk {city}"}],
+                }
+                for i, city in enumerate(cities)
+            ],
+        }
+    )
+
+
+def trip_llm(cities=("Kochi", "Munnar", "Munnar"), **parse_fields) -> FakeLLM:
+    """Everything a full trip run asks the LLM, scripted."""
+    parse = {
+        "destination": "Kerala",
+        "origin": "Delhi",
+        "start_date": START.isoformat(),
+        "end_date": date.fromordinal(START.toordinal() + len(cities) - 1).isoformat(),
+    } | parse_fields
+    return FakeLLM(
+        by_system={
+            PARSE_REQUEST_SYSTEM: [_parse(**parse)],
+            FLIGHT_AGENT_SYSTEM: ["Cheapest on the day."],
+            HOTEL_AGENT_SYSTEM: ["Cheapest is fine."],
+            ITINERARY_AGENT_SYSTEM: [_days(list(cities))],
+            FINAL_RESPONSE_AGENT_SYSTEM: ["Three days in Kerala."],
+        }
+    )
+
+
+def ask(prompt, llm, settings, **choices):
+    return answer_prompt(
+        prompt, llm=llm, provider=MockTravelProvider(), settings=settings, **choices
+    )
+
+
+# --- routing -----------------------------------------------------------------
+
+
+def test_a_places_request_goes_to_google_maps_and_nothing_else(maps, settings):
+    llm = FakeLLM(
+        by_system={
+            PARSE_REQUEST_SYSTEM: [
+                _parse(intent="places", places_query="best restaurants in Bhubaneswar")
+            ]
+        }
+    )
+
+    answer = ask("best places to eat in bhuvneshwar", llm, settings)
 
     assert answer.kind == "places"
-    assert answer.places.summary == "Dalma [0]."
+    assert answer.places.query == "best restaurants in Bhubaneswar"
     assert answer.trip is None
-    assert fake_maps["places"] == "best restaurants in Bhubaneswar"
-    # Only the parser ran: no agent graph, no other LLM call.
     assert [c["system"] for c in llm.calls] == [PARSE_REQUEST_SYSTEM]
 
 
-def test_a_route_request_goes_to_google_maps(fake_maps, settings):
-    llm = _parse_llm(intent="route", origin="Madurai", destination="Rameswaram")
+def test_a_route_request_goes_to_google_maps(maps, settings):
+    llm = FakeLLM(
+        by_system={
+            PARSE_REQUEST_SYSTEM: [
+                _parse(
+                    intent="route", origin="Madurai", destination="Rameswaram", travel_mode="WALK"
+                )
+            ]
+        }
+    )
 
-    answer = answer_prompt("how far is rameshwaram from madurai", llm=llm, settings=settings)
+    answer = ask("walk from madurai to rameswaram", llm, settings)
 
     assert answer.kind == "route"
-    assert fake_maps["route"] == ("Madurai", "Rameswaram", "DRIVE")
+    assert maps["route"] == ("Madurai", "Rameswaram", "WALK")
 
 
-def test_a_walking_route_keeps_its_mode(fake_maps, settings):
-    llm = _parse_llm(
-        intent="route", origin="Puri beach", destination="Jagannath Temple", travel_mode="WALK"
-    )
-
-    answer_prompt("walk from puri beach to the temple", llm=llm, settings=settings)
-
-    assert fake_maps["route"][2] == "WALK"
-
-
-def _trip_with_cities(trip_request, cities, *, places_per_city=None):
-    """A planned trip whose days are based in `cities`, in order."""
-    request = trip_request.model_copy(update={"places_per_city": places_per_city})
-    days = [
-        DayPlan(day=i + 1, date=date(2027, 1, 10 + i), summary=f"Day {i + 1}", city=city)
-        for i, city in enumerate(cities)
-    ]
-    return sample_planned_trip(request, days=days)
-
-
-@pytest.fixture
-def fake_plan(monkeypatch):
-    """Stops answer_prompt at the planner, returning `seen["trip"]` with the
-    `places_per_city` it was asked to plan with — as the real one records."""
-    seen = {}
-
-    def plan(parsed, **kwargs):
-        seen["parsed"] = parsed
-        seen.update(kwargs)
-        trip = seen["trip"]
-        request = trip.request.model_copy(update={"places_per_city": kwargs["places_per_city"]})
-        return trip.model_copy(update={"request": request})
-
-    monkeypatch.setattr(assistant, "plan_parsed_trip", plan)
-    return seen
-
-
-def test_a_trip_request_is_planned_with_the_pages_choices(
-    fake_plan, fake_maps, trip_request, settings
-):
-    fake_plan["trip"] = _trip_with_cities(trip_request, ["Goa"])
-    llm = _parse_llm(intent="trip", destination="Goa")
-
-    answer = answer_prompt(
-        "4 days in Goa",
-        include_flights=False,
-        include_hotels=True,
-        start_date=date(2027, 1, 10),
-        end_date=date(2027, 1, 13),
-        llm=llm,
-        settings=settings,
-    )
+def test_a_trip_request_runs_the_whole_trip_graph(maps, settings):
+    answer = ask("3 days in Kerala from Delhi", trip_llm(), settings)
 
     assert answer.kind == "trip"
-    assert answer.trip.id == fake_plan["trip"].id
-    assert fake_plan["parsed"].destination == "Goa"
-    assert fake_plan["include_flights"] is False
-    assert fake_plan["start_date"] == date(2027, 1, 10)
-    # Nothing asked for places, so Maps isn't touched.
-    assert answer.places_by_city == []
-    assert "places" not in fake_maps and "route" not in fake_maps
+    trip = answer.trip
+    assert trip.version == 1 and trip.thread_id == trip.id
+    assert [d.city for d in trip.itinerary.days] == ["Kochi", "Munnar", "Munnar"]
+    assert trip.summary == "Three days in Kerala."
+    # Every step leaves its mark in the trace — the routing step included.
+    assert trip.agent_trace[0] == "interpreter: read as a trip request"
+    assert any(m.startswith("itinerary_agent") for m in trip.agent_trace)
+    assert answer.places_by_city == [] and maps["queries"] == []
 
 
-def _patch_many(monkeypatch, answer_for) -> list[str]:
-    """Replaces the batch Maps search; `answer_for(query)` returns an answer
-    or raises GoogleMapsError, which comes back in that query's slot as the
-    real one does. Returns the list of queries searched."""
-    from app.providers.google_maps import GoogleMapsError
-
-    queries: list[str] = []
-
-    def search_places_many(qs):
-        queries.extend(qs)
-        results = []
-        for q in qs:
-            try:
-                results.append(answer_for(q))
-            except GoogleMapsError as exc:
-                results.append(exc)
-        return results
-
-    monkeypatch.setattr(assistant.google_maps, "search_places_many", search_places_many)
-    return queries
-
-
-def test_a_trip_that_asks_for_places_gets_one_search_per_city(
-    fake_plan, monkeypatch, trip_request, settings
-):
-    queries = _patch_many(
-        monkeypatch, lambda query: PlacesAnswer(query=query, summary="s", places=[])
-    )
-    fake_plan["trip"] = _trip_with_cities(
-        trip_request,
-        ["Kochi", "Kochi", "Alleppey", "Munnar", "munnar", None],
-        places_per_city="restaurants",
-    )
-    llm = _parse_llm(intent="trip", destination="Kerala")
-
-    answer = answer_prompt(
-        "6 day kerala itinerary", include_restaurants=True, llm=llm, settings=settings
+def test_the_pages_choices_shape_the_trip(maps, settings):
+    answer = ask(
+        "3 days in Kerala from Delhi",
+        trip_llm(),
+        settings,
+        include_flights=False,
+        include_hotels=True,
+        start_date=START,
+        end_date=END,
     )
 
-    assert fake_plan["places_per_city"] == "restaurants"
-    assert [c.city for c in answer.places_by_city] == ["Kochi", "Alleppey", "Munnar"]
-    # One batch, in the trip's order: the searches themselves run at once.
-    assert queries == [
-        "best restaurants in Kochi",
-        "best restaurants in Alleppey",
-        "best restaurants in Munnar",
-    ]
-    assert answer.places_by_city[0].places.query == "best restaurants in Kochi"
+    request = answer.trip.request
+    assert request.include_flights is False and request.include_hotels is True
+    assert (request.start_date, request.end_date) == (START, END)
+    assert answer.trip.itinerary.outbound_options == []  # flights unticked: not searched
+    assert answer.trip.itinerary.lodging_source.status == "sample"
 
 
-def test_one_city_failing_still_returns_the_trip(fake_plan, monkeypatch, trip_request, settings):
-    from app.providers.google_maps import GoogleMapsError
+def test_a_trip_with_no_destination_is_refused_before_planning(maps, settings):
+    llm = trip_llm(destination=None)
 
+    with pytest.raises(PromptParseError, match="no destination was named"):
+        ask("plan me a trip from Delhi", llm, settings)
+
+    assert [c["system"] for c in llm.calls] == [PARSE_REQUEST_SYSTEM]
+
+
+def test_half_a_date_pair_is_refused(settings):
+    with pytest.raises(ValueError, match="both start_date and end_date"):
+        ask("Goa", trip_llm(), settings, start_date=START)
+
+
+# --- places in each city: the Send fan-out ------------------------------------
+
+
+def test_restaurants_are_looked_up_once_per_city_in_trip_order(maps, settings):
+    llm = trip_llm(cities=("Kochi", "Munnar", "Alleppey"))
+
+    answer = ask("3 days in Kerala", llm, settings, include_restaurants=True)
+
+    assert sorted(maps["queries"]) == sorted(
+        ["best restaurants in Kochi", "best restaurants in Munnar", "best restaurants in Alleppey"]
+    )
+    # The parallel searches finish in any order; the answer is in trip order.
+    assert [c.city for c in answer.places_by_city] == ["Kochi", "Munnar", "Alleppey"]
+    assert answer.trip.request.places_per_city == "restaurants"
+
+
+def test_the_sentence_picks_the_kind_of_place(maps, settings):
+    llm = trip_llm(cities=("Kolkata",), places_per_city="street food")
+
+    ask("kolkata, with street food", llm, settings, include_restaurants=True)
+
+    assert maps["queries"] == ["best street food in Kolkata"]
+
+
+def test_without_the_restaurants_box_nothing_is_looked_up(maps, settings):
+    llm = trip_llm(places_per_city="restaurants")
+
+    answer = ask("kerala, best places to eat in each city", llm, settings)
+
+    assert maps["queries"] == [] and answer.places_by_city == []
+    assert answer.trip.request.places_per_city is None
+
+
+def test_one_city_failing_keeps_the_others_and_the_trip(maps, settings):
     def answer_for(query):
         if "Munnar" in query:
             raise GoogleMapsError("quota exceeded")
         return PlacesAnswer(query=query, summary="s", places=[])
 
-    _patch_many(monkeypatch, answer_for)
-    fake_plan["trip"] = _trip_with_cities(
-        trip_request, ["Kochi", "Munnar"], places_per_city="restaurants"
+    maps["answer"] = answer_for
+
+    answer = ask(
+        "kerala", trip_llm(cities=("Kochi", "Munnar")), settings, include_restaurants=True
     )
 
-    answer = answer_prompt(
-        "kerala", include_restaurants=True, llm=_parse_llm(), settings=settings
-    )
-
-    assert answer.trip.id == fake_plan["trip"].id
     kochi, munnar = answer.places_by_city
     assert kochi.places is not None and kochi.error is None
     assert munnar.places is None and munnar.error == "quota exceeded"
-
-
-def test_without_the_restaurants_box_nothing_is_looked_up(
-    fake_plan, fake_maps, trip_request, settings
-):
-    """Only when asked, like flights and hotels — even if the sentence
-    mentions places to eat."""
-    fake_plan["trip"] = _trip_with_cities(trip_request, ["Kochi", "Munnar"])
-    llm = _parse_llm(intent="trip", destination="Kerala", places_per_city="restaurants")
-
-    answer = answer_prompt(
-        "6 day kerala itinerary, also the best places to eat in each city",
-        llm=llm,
-        settings=settings,
-    )
-
-    assert fake_plan["places_per_city"] is None
-    assert answer.places_by_city == []
-    assert "places" not in fake_maps
-
-
-def test_the_sentence_can_choose_the_kind_of_place(
-    fake_plan, monkeypatch, trip_request, settings
-):
-    queries = _patch_many(
-        monkeypatch, lambda query: PlacesAnswer(query=query, summary="s", places=[])
-    )
-    fake_plan["trip"] = _trip_with_cities(trip_request, ["Kolkata"])
-    llm = _parse_llm(intent="trip", destination="Kolkata", places_per_city="street food")
-
-    answer_prompt(
-        "3 days in kolkata, street food in each area",
-        include_restaurants=True,
-        llm=llm,
-        settings=settings,
-    )
-
-    assert queries == ["best street food in Kolkata"]
+    assert answer.trip is not None
 
 
 def test_cities_fall_back_to_the_destination_when_days_have_none(trip_request):
-    trip = _trip_with_cities(trip_request, [None, None])
+    from conftest import sample_planned_trip
+
+    from app.models.itinerary import DayPlan
+
+    days = [DayPlan(day=1, date=START, summary="1"), DayPlan(day=2, date=END, summary="2")]
+    trip = sample_planned_trip(trip_request, days=days)
 
     assert assistant.trip_cities(trip) == [trip.itinerary.destination]
 
 
-def test_a_long_trip_searches_at_most_max_cities(trip_request):
-    cities = [f"Town {i}" for i in range(assistant.MAX_CITIES + 3)]
+def test_a_long_trip_searches_at_most_max_cities(maps, settings):
+    cities = tuple(f"Town {i}" for i in range(assistant.MAX_CITIES + 3))
 
-    assert len(assistant.trip_cities(_trip_with_cities(trip_request, cities))) == (
-        assistant.MAX_CITIES
-    )
+    ask("a long trip", trip_llm(cities=cities), settings, include_restaurants=True)
 
-
-def test_half_a_date_pair_is_refused(settings):
-    with pytest.raises(ValueError, match="both start_date and end_date"):
-        answer_prompt("Goa", start_date=date(2027, 1, 1), llm=_parse_llm(), settings=settings)
-
-
-def test_a_failure_before_any_search_marks_every_city(fake_plan, monkeypatch, trip_request,
-                                                      settings):
-    """E.g. no API key: the batch raises instead of returning per-query errors."""
-    from app.providers.google_maps import GoogleMapsError
-
-    def no_key(queries):
-        raise GoogleMapsError("GOOGLE_MAPS_API_KEY is not set")
-
-    monkeypatch.setattr(assistant.google_maps, "search_places_many", no_key)
-    fake_plan["trip"] = _trip_with_cities(trip_request, ["Kochi", "Munnar"])
-
-    answer = answer_prompt("kerala", include_restaurants=True, llm=_parse_llm(),
-                           settings=settings)
-
-    assert [c.error for c in answer.places_by_city] == ["GOOGLE_MAPS_API_KEY is not set"] * 2
-    assert answer.trip is not None
+    assert len(maps["queries"]) == assistant.MAX_CITIES

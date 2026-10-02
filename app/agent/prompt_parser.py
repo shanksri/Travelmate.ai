@@ -205,3 +205,42 @@ def parse_trip_prompt(
     )
     assert interpretation.trip is not None  # always_trip guarantees it
     return interpretation.trip
+
+
+def apply_page_choices(
+    parsed: TripRequest,
+    *,
+    include_flights: bool,
+    include_hotels: bool,
+    places_per_city: str | None,
+    start_date: date | None,
+    end_date: date | None,
+) -> TripRequest:
+    """The request to plan: what the sentence said, with the page's own
+    choices (checkboxes, calendar dates) applied on top. Raises
+    PromptParseError if no destination was named.
+
+    `places_per_city` always replaces whatever the parser read, so a saved
+    trip records what was actually looked up — nothing, unless the page's
+    Restaurants box asked for it.
+    """
+    overrides: dict = {
+        "include_flights": include_flights,
+        "include_hotels": include_hotels,
+        "places_per_city": places_per_city,
+    }
+    if start_date and end_date:
+        overrides |= {"start_date": start_date, "end_date": end_date}
+    # Re-validated rather than model_copy'd, so picked dates go through the
+    # same ordering and length checks as parsed ones.
+    request = TripRequest.model_validate(parsed.model_dump() | overrides)
+    # Without this, a missing destination falls through to resolve_destination,
+    # which picks from the provider's sample list — "Varanasi to Kerala and
+    # Tamil Nadu" came back as five days in Chiang Mai. Asking is better than
+    # planning a trip nobody requested.
+    if not request.destination:
+        raise PromptParseError(
+            "no destination was named. Say where you want to go — a city, state, "
+            "region or country."
+        )
+    return request

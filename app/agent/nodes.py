@@ -1,15 +1,23 @@
-"""The graph's five nodes: a destination coordinator plus the four agents.
+"""The trip graph's steps: a destination coordinator, the four agents, and
+`package_trip`, which turns their output into a saveable `PlannedTrip`.
 
 Each `build_*_node` closes over the (stateless, shareable) provider and LLM
 and returns a plain `state -> dict` callable — the shape LangGraph nodes take.
-Building them once and compiling the graph once means `plan_trip` can invoke
-the same compiled graph for every request.
+
+Steps report progress with `app.agent.events` (a status line as each starts,
+and each day as the itinerary agent finishes writing it). That reaches the
+page when the graph is streamed (app/jobs.py) and does nothing otherwise.
 """
 
 import json
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
+from pydantic import ValidationError
+
+from app.agent.errors import PlanningError
+from app.agent.events import emit, status
 from app.agent.itinerary_json import ItineraryValidationError, parse_itinerary
 from app.agent.llm import LLM
 from app.agent.prompts import (
@@ -20,12 +28,15 @@ from app.agent.prompts import (
     describe_request,
 )
 from app.agent.state import TravelState
+from app.agent.stream_json import DayStreamer
 from app.models.itinerary import (
     DataSource,
+    DayPlan,
     DraftItinerary,
     FlightLeg,
     Itinerary,
     LodgingOption,
+    PlannedTrip,
 )
 from app.providers.base import TravelProvider
 
@@ -105,6 +116,7 @@ def build_flight_node(provider: TravelProvider, llm: LLM):
             }
 
         destination = state["resolved_destination"]
+        status("flights", f"Searching flights from {request.origin} to {destination}…")
         # Both legs at once: they're independent, and a live search takes
         # ~4 s each, so searching them one after the other doubled the wait.
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -176,6 +188,7 @@ def build_hotel_node(provider: TravelProvider, llm: LLM):
                 "messages": ["hotel_agent: skipped (hotels not requested)"],
             }
 
+        status("hotels", f"Searching hotels in {state['resolved_destination']}…")
         options, source = _search_with_source(
             provider,
             "lodging",
@@ -259,10 +272,36 @@ def _flight_options(options: list[dict]) -> list[FlightLeg]:
     return [FlightLeg(**option) for option in options]
 
 
+def _write_itinerary(llm: LLM, user_prompt: str) -> str:
+    """The itinerary agent's answer. Streamed where the LLM supports it, so
+    each day can be shown the moment it's written; the full text is still
+    returned and validated as a whole afterwards."""
+    stream = getattr(llm, "stream", None)
+    if stream is None:
+        return llm.complete(
+            system=ITINERARY_AGENT_SYSTEM, user=user_prompt, json_mode=True, schema=DraftItinerary
+        )
+
+    streamer = DayStreamer()
+    parts: list[str] = []
+    for chunk in stream(
+        system=ITINERARY_AGENT_SYSTEM, user=user_prompt, json_mode=True, schema=DraftItinerary
+    ):
+        parts.append(chunk)
+        for raw_day in streamer.feed(chunk):
+            try:
+                day = DayPlan.model_validate(raw_day)
+            except ValidationError:
+                continue  # left for the full validation to report
+            emit({"type": "day", "day": day.model_dump(mode="json")})
+    return "".join(parts)
+
+
 def build_itinerary_node(provider: TravelProvider, llm: LLM, max_retries: int):
     def node(state: TravelState) -> dict:
         request = state["request"]
         destination = state["resolved_destination"]
+        status("itinerary", "Writing your day-by-day plan…")
         attractions = provider.search_attractions(destination, request.interests, limit=10)
         weather = provider.get_weather_outlook(destination, request.start_date)
 
@@ -341,12 +380,10 @@ def build_itinerary_node(provider: TravelProvider, llm: LLM, max_retries: int):
                     "Fix it and return the complete JSON again."
                 )
 
-            raw = llm.complete(
-                system=ITINERARY_AGENT_SYSTEM,
-                user=user_prompt,
-                json_mode=True,
-                schema=DraftItinerary,
-            )
+            if attempt > 1:
+                # Days already shown came from an attempt that was rejected.
+                emit({"type": "days_reset"})
+            raw = _write_itinerary(llm, user_prompt)
             try:
                 draft = parse_itinerary(raw, request)
             except ItineraryValidationError as exc:
@@ -399,6 +436,7 @@ def build_final_response_node(llm: LLM):
             # Nothing to summarise — the itinerary agent already recorded why.
             return {"final_response": ""}
 
+        status("summary", "Writing the trip summary…")
         # Deliberately not passing along flight_results/hotel_results'
         # free-text recommendations here: itinerary already carries the
         # actual selected flights and hotel (see build_itinerary_node), and
@@ -411,6 +449,35 @@ def build_final_response_node(llm: LLM):
         return {
             "final_response": summary.strip(),
             "messages": ["final_response_agent: wrote the trip summary"],
+        }
+
+    return node
+
+
+def build_package_trip_node():
+    """The last trip step: the itinerary and summary as a `PlannedTrip`, ready
+    to save. A fresh plan starts its own thread at version 1."""
+
+    def node(state: TravelState) -> dict:
+        itinerary = state.get("itinerary")
+        if itinerary is None:
+            reason = "; ".join(state.get("errors") or []) or "no reason recorded"
+            raise PlanningError(f"the agent pipeline did not produce an itinerary: {reason}")
+
+        # `id` identifies this version; `thread_id` is what a later revision
+        # is addressed to, and is the same value here only because nothing
+        # has been revised yet.
+        trip_id = uuid.uuid4().hex[:12]
+        return {
+            "trip": PlannedTrip(
+                id=trip_id,
+                thread_id=trip_id,
+                version=1,
+                request=state["request"],
+                itinerary=itinerary,
+                agent_trace=state["messages"],
+                summary=state.get("final_response") or "",
+            )
         }
 
     return node

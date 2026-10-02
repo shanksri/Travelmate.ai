@@ -16,11 +16,16 @@ version of the same thread rather than replacing it — see app/store.py.
 
 import json
 import logging
+import operator
 import uuid
+from typing import Annotated, TypedDict
 
 import openai
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.agent.events import status
 from app.agent.itinerary_json import ItineraryValidationError, parse_itinerary
 from app.agent.llm import LLM, OpenAILLM
 from app.agent.prompts import (
@@ -260,6 +265,219 @@ def _rebooked(option: FlightLeg, change_request: str) -> FlightLeg:
     return option.model_copy(update={"rationale": f"Chosen on request: {change_request}"})
 
 
+# --- the revision graph ----------------------------------------------------------
+#
+#   START -> route_change -> (declined) ---------------------------------> END
+#                         -> apply_picks -> revise_days -> package_revision -> END
+#                                        -> package_revision ----------------> END
+#
+# `revise_days` runs only when the change is about the days; any step can
+# end it early with a reason in `declined`, and `revise_trip` raises that.
+
+
+class RevisionState(TypedDict, total=False):
+    previous: PlannedTrip
+    change_request: str
+    route: ChangeRoute
+    outbound: FlightLeg | None
+    return_flight: FlightLeg | None
+    lodging: list[LodgingOption]
+    days: list[DayPlan]
+    notes: list[str]
+    trace: Annotated[list[str], operator.add]
+    declined: str | None
+    trip: PlannedTrip | None
+
+
+def _has_nothing_to_repick(itinerary: Itinerary) -> bool:
+    return (
+        not itinerary.outbound_options
+        and not itinerary.return_options
+        and not itinerary.lodging_options
+    )
+
+
+def _build_route_change_node(llm: LLM, attempts: int):
+    def node(state: RevisionState) -> dict:
+        previous = state["previous"]
+        itinerary = previous.itinerary
+        status("route_change", "Working out what to change…")
+        start = {
+            "outbound": itinerary.outbound_flight,
+            "return_flight": itinerary.return_flight,
+            "lodging": list(itinerary.lodging_options),
+            "days": itinerary.days,
+            "notes": itinerary.notes,
+        }
+        if _has_nothing_to_repick(itinerary):
+            # Nothing to re-pick, so the only thing a change can touch is the
+            # days. Routing it anyway once refused "adjust more days to tamil
+            # nadu" (2 runs in 5) because "the trip has no hotel". This is
+            # every trip planned with Flights and Hotels unticked, the page's
+            # default, and skipping the router saves a call. A request that
+            # really is about flights or a hotel is declined by the day
+            # planner instead.
+            return start | {
+                "route": ChangeRoute(itinerary=state["change_request"]),
+                "trace": [
+                    "change_router: skipped (no flights or hotel to re-pick; "
+                    "the change goes to the days)"
+                ],
+            }
+
+        route = _route_change(previous, state["change_request"], llm, attempts)
+        if route.declined:
+            return {"route": route, "declined": route.declined}
+        return start | {
+            "route": route,
+            "trace": [f"change_router: {route.reasoning or 'routed the change'}"],
+        }
+
+    return node
+
+
+def _build_apply_picks_node():
+    def node(state: RevisionState) -> dict:
+        route, itinerary = state["route"], state["previous"].itinerary
+        change_request = state["change_request"]
+        update: dict = {"trace": []}
+
+        if route.outbound is not None:
+            pick = itinerary.outbound_options[route.outbound]
+            if not _same_flight(pick, state["outbound"]):
+                update["outbound"] = _rebooked(pick, change_request)
+                update["trace"].append(f"flights: outbound rebooked to option {route.outbound}")
+
+        if route.return_leg is not None:
+            pick = itinerary.return_options[route.return_leg]
+            if not _same_flight(pick, state["return_flight"]):
+                update["return_flight"] = _rebooked(pick, change_request)
+                update["trace"].append(f"flights: return rebooked to option {route.return_leg}")
+
+        # The first lodging option is the selected one everywhere (the
+        # itinerary node's cost, the page's "Selected" tag), so switching
+        # means moving it to the front.
+        if route.hotel:
+            lodging = list(state["lodging"])
+            lodging.insert(0, lodging.pop(route.hotel))
+            update["lodging"] = lodging
+            update["trace"].append(f"hotel: switched to {lodging[0].name}")
+        return update
+
+    return node
+
+
+def _build_revise_days_node(llm: LLM, attempts: int):
+    def node(state: RevisionState) -> dict:
+        status("revise_days", "Re-planning the days…")
+        previous = state["previous"]
+        try:
+            days, notes = _revise_days(
+                previous.itinerary, previous.request, state["route"].itinerary, llm, attempts
+            )
+        except RevisionDeclined as exc:
+            return {"declined": str(exc)}
+        return {"days": days, "notes": notes, "trace": ["reviser: re-planned the days"]}
+
+    return node
+
+
+def _build_package_revision_node(llm: LLM):
+    def node(state: RevisionState) -> dict:
+        if len(state["trace"]) == 1:
+            # Routed, but everything it pointed at was already the case —
+            # e.g. "book the cheapest flight" when the cheapest is booked.
+            return {
+                "declined": state["route"].reasoning
+                or "the plan already matches what was asked for."
+            }
+
+        previous = state["previous"]
+        itinerary = previous.itinerary
+        outbound, return_flight = state["outbound"], state["return_flight"]
+        lodging, days = state["lodging"], state["days"]
+
+        flight_cost = (outbound.total or 0 if outbound else 0) + (
+            return_flight.total or 0 if return_flight else 0
+        )
+        hotel_cost = lodging[0].total or 0 if lodging else 0
+        activity_cost = sum(
+            activity.estimated_cost or 0 for day in days for activity in day.activities
+        )
+        revised = Itinerary(
+            destination=itinerary.destination,
+            start_date=itinerary.start_date,
+            end_date=itinerary.end_date,
+            travelers=itinerary.travelers,
+            outbound_flight=outbound,
+            return_flight=return_flight,
+            outbound_options=itinerary.outbound_options,
+            return_options=itinerary.return_options,
+            lodging_options=lodging,
+            outbound_source=itinerary.outbound_source,
+            return_source=itinerary.return_source,
+            lodging_source=itinerary.lodging_source,
+            days=days,
+            currency=itinerary.currency,
+            total_estimated_cost=flight_cost + hotel_cost + activity_cost,
+            notes=state["notes"],
+        )
+
+        status("summary", "Writing the trip summary…")
+        summary = llm.complete(
+            system=FINAL_RESPONSE_AGENT_SYSTEM,
+            user=f"Itinerary: {revised.model_dump_json()}",
+        )
+        trace = [*state["trace"], "final_response_agent: rewrote the trip summary"]
+        return {
+            "trace": ["final_response_agent: rewrote the trip summary"],
+            "trip": PlannedTrip(
+                id=uuid.uuid4().hex[:12],
+                thread_id=previous.thread_id,
+                version=previous.version + 1,
+                change_note=state["change_request"],
+                request=previous.request,
+                itinerary=revised,
+                agent_trace=trace,
+                summary=summary.strip(),
+            ),
+        }
+
+    return node
+
+
+def _end_if_declined(next_step: str):
+    def choose(state: RevisionState) -> str:
+        return END if state.get("declined") else next_step
+
+    return choose
+
+
+def _after_picks(state: RevisionState) -> str:
+    return "revise_days" if state["route"].itinerary else "package_revision"
+
+
+def build_revision_graph(llm: LLM, attempts: int) -> CompiledStateGraph:
+    graph = StateGraph(RevisionState)
+    graph.add_node("route_change", _build_route_change_node(llm, attempts))
+    graph.add_node("apply_picks", _build_apply_picks_node())
+    graph.add_node("revise_days", _build_revise_days_node(llm, attempts))
+    graph.add_node("package_revision", _build_package_revision_node(llm))
+
+    graph.add_edge(START, "route_change")
+    graph.add_conditional_edges(
+        "route_change", _end_if_declined("apply_picks"), ["apply_picks", END]
+    )
+    graph.add_conditional_edges(
+        "apply_picks", _after_picks, ["revise_days", "package_revision"]
+    )
+    graph.add_conditional_edges(
+        "revise_days", _end_if_declined("package_revision"), ["package_revision", END]
+    )
+    graph.add_edge("package_revision", END)
+    return graph.compile()
+
+
 def revise_trip(
     previous: PlannedTrip,
     change_request: str,
@@ -267,7 +485,8 @@ def revise_trip(
     llm: LLM | None = None,
     settings: Settings | None = None,
 ) -> PlannedTrip:
-    """Produce the next version of `previous` with `change_request` applied.
+    """Produce the next version of `previous` with `change_request` applied,
+    by running the revision graph.
 
     Pure in the sense that matters: it reads `previous` and returns a new
     `PlannedTrip`, and never touches the store — the caller decides whether
@@ -276,106 +495,11 @@ def revise_trip(
     """
     settings = settings or get_settings()
     llm = llm or _build_llm(settings)
-    attempts = settings.max_itinerary_retries + 1
+    graph = build_revision_graph(llm, settings.max_itinerary_retries + 1)
 
-    request = previous.request
-    itinerary = previous.itinerary
-
-    if (
-        not itinerary.outbound_options
-        and not itinerary.return_options
-        and not itinerary.lodging_options
-    ):
-        # Nothing to re-pick, so the only thing a change can touch is the
-        # days. Routing it anyway once refused "adjust more days to tamil
-        # nadu" (2 runs in 5) because "the trip has no hotel". This is every
-        # trip planned with Flights and Hotels unticked, the page's default,
-        # and skipping the router saves a call. A request that really is about
-        # flights or a hotel is declined by the day planner instead.
-        route = ChangeRoute(itinerary=change_request)
-        trace = [
-            "change_router: skipped (no flights or hotel to re-pick; the change goes to the days)"
-        ]
-    else:
-        route = _route_change(previous, change_request, llm, attempts)
-        if route.declined:
-            raise RevisionDeclined(route.declined)
-        trace = [f"change_router: {route.reasoning or 'routed the change'}"]
-
-    outbound = itinerary.outbound_flight
-    if route.outbound is not None:
-        pick = itinerary.outbound_options[route.outbound]
-        if not _same_flight(pick, outbound):
-            outbound = _rebooked(pick, change_request)
-            trace.append(f"flights: outbound rebooked to option {route.outbound}")
-
-    return_flight = itinerary.return_flight
-    if route.return_leg is not None:
-        pick = itinerary.return_options[route.return_leg]
-        if not _same_flight(pick, return_flight):
-            return_flight = _rebooked(pick, change_request)
-            trace.append(f"flights: return rebooked to option {route.return_leg}")
-
-    # The first lodging option is the selected one everywhere (the itinerary
-    # node's cost, the page's "Selected" tag), so switching means moving it
-    # to the front.
-    lodging = list(itinerary.lodging_options)
-    if route.hotel:
-        lodging.insert(0, lodging.pop(route.hotel))
-        trace.append(f"hotel: switched to {lodging[0].name}")
-
-    days, notes = itinerary.days, itinerary.notes
-    if route.itinerary:
-        days, notes = _revise_days(itinerary, request, route.itinerary, llm, attempts)
-        trace.append("reviser: re-planned the days")
-
-    if len(trace) == 1:
-        # Routed, but everything it pointed at was already the case — e.g.
-        # "book the cheapest flight" when the cheapest is already booked.
-        raise RevisionDeclined(
-            route.reasoning or "the plan already matches what was asked for."
-        )
-
-    flight_cost = (outbound.total or 0 if outbound else 0) + (
-        return_flight.total or 0 if return_flight else 0
+    result = graph.invoke(
+        {"previous": previous, "change_request": change_request, "trace": [], "declined": None}
     )
-    hotel_cost = lodging[0].total or 0 if lodging else 0
-    activity_cost = sum(
-        activity.estimated_cost or 0 for day in days for activity in day.activities
-    )
-
-    revised = Itinerary(
-        destination=itinerary.destination,
-        start_date=itinerary.start_date,
-        end_date=itinerary.end_date,
-        travelers=itinerary.travelers,
-        outbound_flight=outbound,
-        return_flight=return_flight,
-        outbound_options=itinerary.outbound_options,
-        return_options=itinerary.return_options,
-        lodging_options=lodging,
-        outbound_source=itinerary.outbound_source,
-        return_source=itinerary.return_source,
-        lodging_source=itinerary.lodging_source,
-        days=days,
-        currency=itinerary.currency,
-        total_estimated_cost=flight_cost + hotel_cost + activity_cost,
-        notes=notes,
-    )
-
-    summary = llm.complete(
-        system=FINAL_RESPONSE_AGENT_SYSTEM,
-        user=f"Itinerary: {revised.model_dump_json()}",
-    )
-    trace.append("final_response_agent: rewrote the trip summary")
-
-    return PlannedTrip(
-        id=uuid.uuid4().hex[:12],
-        thread_id=previous.thread_id,
-        version=previous.version + 1,
-        change_note=change_request,
-        request=request,
-        itinerary=revised,
-        agent_trace=trace,
-        summary=summary.strip(),
-    )
+    if result.get("declined"):
+        raise RevisionDeclined(result["declined"])
+    return result["trip"]

@@ -17,11 +17,10 @@ flight searches) and the page shows the attribution.
 Free usage is 10,000 requests a month; each tool call is one.
 
 Calls go over one long-lived session (app/providers/mcp_runtime.py) rather
-than a new connection each, and `search_places_many` runs several searches at
-once over it — a trip's per-city lookups.
+than a new connection each. A trip's per-city lookups run at once over it,
+as parallel graph steps (app/agent/ask_nodes.py).
 """
 
-import asyncio
 import json
 import logging
 import os
@@ -130,26 +129,6 @@ def _places_answer(query: str, raw: dict[str, Any]) -> PlacesAnswer:
 def search_places(query: str, *, api_key: str | None = None) -> PlacesAnswer:
     """Places matching `query`, e.g. "best restaurants in Bhubaneswar"."""
     return _places_answer(query, _run("search_places", {"textQuery": query}, api_key))
-
-
-def search_places_many(
-    queries: list[str], *, api_key: str | None = None
-) -> list[PlacesAnswer | GoogleMapsError]:
-    """Every query at once, over the one shared session. Each result is the
-    answer or that query's error, in the order given, so one failure doesn't
-    lose the others."""
-    key = _api_key(api_key)
-
-    async def one(query: str) -> PlacesAnswer | GoogleMapsError:
-        try:
-            return _places_answer(query, await _arun("search_places", {"textQuery": query}, key))
-        except GoogleMapsError as exc:
-            return exc
-
-    async def every() -> list[PlacesAnswer | GoogleMapsError]:
-        return list(await asyncio.gather(*(one(query) for query in queries)))
-
-    return get_mcp_runtime().run(every())
 
 
 def _seconds(duration: str | None) -> int | None:

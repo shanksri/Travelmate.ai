@@ -14,6 +14,7 @@ changed nothing) still run afterwards.
 """
 
 import logging
+from collections.abc import Iterator
 from typing import Any, Protocol
 
 import openai
@@ -80,15 +81,18 @@ class OpenAILLM:
         self._temperature = temperature
         self._max_tokens = max_tokens
 
-    def complete(
-        self,
-        *,
-        system: str,
-        user: str,
-        json_mode: bool = False,
-        schema: type[BaseModel] | None = None,
-    ) -> str:
-        kwargs: dict = {}
+    def _request(
+        self, system: str, user: str, json_mode: bool, schema: type[BaseModel] | None
+    ) -> dict:
+        kwargs: dict = {
+            "model": self._model,
+            "temperature": self._temperature,
+            "max_tokens": self._max_tokens,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        }
         if schema is not None:
             kwargs["response_format"] = {
                 "type": "json_schema",
@@ -100,16 +104,41 @@ class OpenAILLM:
             }
         elif json_mode:
             kwargs["response_format"] = {"type": "json_object"}
+        return kwargs
 
+    def stream(
+        self,
+        *,
+        system: str,
+        user: str,
+        json_mode: bool = False,
+        schema: type[BaseModel] | None = None,
+    ) -> Iterator[str]:
+        """The same call as `complete`, yielding the answer's text as it's
+        generated. Used by the itinerary agent so the page can show each day
+        as soon as it's written (app/agent/stream_json.py)."""
         response = self._client.chat.completions.create(
-            model=self._model,
-            temperature=self._temperature,
-            max_tokens=self._max_tokens,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            **kwargs,
+            stream=True, **self._request(system, user, json_mode, schema)
+        )
+        for chunk in response:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if getattr(delta, "refusal", None):
+                logger.warning("model refused: %s", delta.refusal)
+            if delta.content:
+                yield delta.content
+
+    def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        json_mode: bool = False,
+        schema: type[BaseModel] | None = None,
+    ) -> str:
+        response = self._client.chat.completions.create(
+            **self._request(system, user, json_mode, schema)
         )
         message = response.choices[0].message
         refusal = getattr(message, "refusal", None)
