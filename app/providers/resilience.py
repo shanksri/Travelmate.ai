@@ -21,6 +21,10 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
+
+from app.models.itinerary import DataSource
+from app.providers.flight_cache import FlightCache
 
 logger = logging.getLogger(__name__)
 
@@ -102,3 +106,61 @@ class CircuitBreaker:
                     self._cooldown / 60,
                     reason,
                 )
+
+
+def _when(epoch_seconds: float) -> datetime:
+    return datetime.fromtimestamp(epoch_seconds, tz=UTC)
+
+
+def fetch_with_fallback(
+    *,
+    cache: FlightCache,
+    cache_key: str,
+    live: Callable[[], dict],
+    breaker: CircuitBreaker,
+    provider: str,
+    link: str,
+) -> tuple[dict | None, DataSource]:
+    """The retry and fallback chain, shared by flights and hotels. In order:
+
+    1. a fresh cached search;
+    2. `live()` — which retries transient failures itself — unless `breaker`
+       is open after repeated failures;
+    3. an older cached search, still kept, labelled stale;
+    4. nothing, with the reason and `link` to search for themselves.
+
+    Never raises, and never falls back to sample data. A failure that has an
+    `account_problem` attribute set (bad key, exhausted quota) opens the
+    breaker at once.
+    """
+    kept = cache.lookup(cache_key)
+    if kept is not None and cache.get(cache_key) is not None:
+        return kept.payload, DataSource(
+            status="cached", provider=provider, fetched_at=_when(kept.fetched_at), link=link
+        )
+
+    if breaker.allow():
+        try:
+            payload = live()
+        except Exception as exc:
+            failure = str(exc)
+            breaker.record_failure(failure, open_now=getattr(exc, "account_problem", False))
+            logger.warning("live %s search failed: %s", provider, failure)
+        else:
+            breaker.record_success()
+            cache.put(cache_key, payload)
+            return payload, DataSource(
+                status="live", provider=provider, fetched_at=datetime.now(UTC), link=link
+            )
+    else:
+        failure = f"skipped after repeated failures ({breaker.reason})"
+
+    if kept is not None:
+        return kept.payload, DataSource(
+            status="stale",
+            provider=provider,
+            fetched_at=_when(kept.fetched_at),
+            detail=f"the live search failed: {failure}",
+            link=link,
+        )
+    return None, DataSource(status="unavailable", provider=provider, detail=failure, link=link)

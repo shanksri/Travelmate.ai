@@ -125,11 +125,12 @@ def _instant_retries_and_closed_breakers(monkeypatch):
     """Live sources retry with real waits (1 s, then 3 s) and keep a
     process-wide circuit breaker. Tests don't wait, and each starts with the
     breaker closed, so one test's failures can't skip the next test's search."""
-    from app.providers import google_flights
+    from app.providers import google_flights, google_hotels
     from app.providers.resilience import CircuitBreaker
 
-    monkeypatch.setattr(google_flights, "RETRY_DELAYS", (0, 0))
-    monkeypatch.setattr(google_flights, "breaker", CircuitBreaker("Google Flights"))
+    for source in (google_flights, google_hotels):
+        monkeypatch.setattr(source, "RETRY_DELAYS", (0, 0))
+        monkeypatch.setattr(source, "breaker", CircuitBreaker(source.PROVIDER))
 
 
 @pytest.fixture(autouse=True)

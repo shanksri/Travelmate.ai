@@ -8,9 +8,10 @@ def get_provider() -> TravelProvider:
     """Return the provider named by settings.
 
     "mock" is deterministic fiction, needs no keys, and is what the tests run
-    against. "live" serves real flight fares from Travelpayouts and mock data
-    for everything else — lodging, attractions and weather still have no real
-    source here.
+    against; the page labels it "Sample data". "live" serves real Google
+    Flights and Google Hotels prices via SerpApi, each through a retry and
+    fallback chain, and mock data for everything else: attractions and
+    weather still have no real source here.
     """
     provider = get_settings().provider
     if provider == "mock":

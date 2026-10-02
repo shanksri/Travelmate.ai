@@ -19,7 +19,7 @@ search Google Flights. It never falls back to sample data.
 import json
 import logging
 import os
-from datetime import UTC, date, datetime
+from datetime import date
 from typing import Any
 from urllib.parse import urlencode
 
@@ -29,7 +29,12 @@ from app.models.itinerary import DataSource
 from app.providers import serpapi
 from app.providers.flight_cache import get_flight_cache
 from app.providers.iata import airports_for, resolve_route
-from app.providers.resilience import RETRY_DELAYS_SECONDS, CircuitBreaker, with_retries
+from app.providers.resilience import (
+    RETRY_DELAYS_SECONDS,
+    CircuitBreaker,
+    fetch_with_fallback,
+    with_retries,
+)
 from app.providers.serpapi import SerpApiError
 
 load_dotenv()
@@ -137,10 +142,6 @@ def google_flights_link(origin: str, destination: str, depart: date) -> str:
     return f"https://www.google.com/travel/flights?{urlencode({'q': query})}"
 
 
-def _when(epoch_seconds: float) -> datetime:
-    return datetime.fromtimestamp(epoch_seconds, tz=UTC)
-
-
 def fetch_flights_with_fallback(
     *,
     departure_ids: str,
@@ -149,49 +150,17 @@ def fetch_flights_with_fallback(
     link: str,
     api_key: str | None = None,
 ) -> tuple[dict | None, DataSource]:
-    """The retry and fallback chain, in order:
-
-    1. a fresh cached search (under `flight_cache_ttl_hours`);
-    2. a live search, retried on transient failures, unless the circuit
-       breaker is open after repeated failures;
-    3. an older cached search (up to `stale_cache_hours`), labelled stale;
-    4. nothing, with the reason and a link to search Google Flights.
-
-    Never raises, and never falls back to sample data.
-    """
-    cache_key = _cache_key(departure_ids, arrival_ids, outbound_date)
-    cache = get_flight_cache()
-    kept = cache.lookup(cache_key)
-    if kept is not None and cache.get(cache_key) is not None:
-        return kept.payload, DataSource(
-            status="cached", provider=PROVIDER, fetched_at=_when(kept.fetched_at), link=link
-        )
-
-    if breaker.allow():
-        try:
-            payload = _live_search(departure_ids, arrival_ids, outbound_date, api_key)
-        except GoogleFlightsError as exc:
-            breaker.record_failure(str(exc), open_now=exc.account_problem)
-            failure = str(exc)
-            logger.warning("live flight search failed: %s", failure)
-        else:
-            breaker.record_success()
-            cache.put(cache_key, payload)
-            return payload, DataSource(
-                status="live", provider=PROVIDER, fetched_at=datetime.now(UTC), link=link
-            )
-    else:
-        failure = f"skipped after repeated failures ({breaker.reason})"
-
-    if kept is not None:
-        return kept.payload, DataSource(
-            status="stale",
-            provider=PROVIDER,
-            fetched_at=_when(kept.fetched_at),
-            detail=f"the live search failed: {failure}",
-            link=link,
-        )
-    return None, DataSource(status="unavailable", provider=PROVIDER, detail=failure, link=link)
+    """The retry and fallback chain (app/providers/resilience.py) for one
+    search: fresh cache, live search, stale cache, then unavailable with
+    `link`. Never raises, and never falls back to sample data."""
+    return fetch_with_fallback(
+        cache=get_flight_cache(),
+        cache_key=_cache_key(departure_ids, arrival_ids, outbound_date),
+        live=lambda: _live_search(departure_ids, arrival_ids, outbound_date, api_key),
+        breaker=breaker,
+        provider=PROVIDER,
+        link=link,
+    )
 
 
 def normalize_flights(raw: dict, *, travelers: int = 1) -> list[dict[str, Any]]:

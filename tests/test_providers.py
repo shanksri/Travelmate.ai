@@ -88,11 +88,41 @@ def test_live_provider_returns_no_flights_rather_than_mock_ones_on_failure(monke
     assert source.link.startswith("https://www.google.com/travel/flights?")
 
 
-def test_live_provider_keeps_mock_data_for_everything_but_flights():
+def test_live_provider_keeps_mock_data_for_everything_but_flights_and_hotels():
     from app.providers.live import LiveTravelProvider
 
     live, mock = LiveTravelProvider(), MockTravelProvider()
 
-    assert live.search_lodging("Lisbon", date(2026, 4, 10), 3, 2) == mock.search_lodging(
-        "Lisbon", date(2026, 4, 10), 3, 2
+    assert live.search_attractions("Lisbon", ["food"], 5) == mock.search_attractions(
+        "Lisbon", ["food"], 5
     )
+    assert live.get_weather_outlook("Lisbon", date(2026, 4, 10)) == mock.get_weather_outlook(
+        "Lisbon", date(2026, 4, 10)
+    )
+
+
+def test_live_provider_serves_real_hotels(monkeypatch):
+    from app.models.itinerary import DataSource
+    from app.providers.live import LiveTravelProvider
+
+    real = [{"name": "Grand Hyatt Kochi Bolgatty", "total": 57071.0}]
+    source = DataSource(status="live", provider="Google Hotels")
+    monkeypatch.setattr(
+        "app.providers.live.search_hotels_with_source", lambda *a, **k: (real, source)
+    )
+
+    assert LiveTravelProvider().search_lodging_with_source(
+        "Kochi", date(2026, 10, 27), 3, 2
+    ) == (real, source)
+
+
+def test_the_mock_provider_labels_its_results_as_sample():
+    flights, flight_source = MockTravelProvider().search_flights_with_source(
+        "Delhi", "Goa", date(2026, 10, 10), 1
+    )
+    hotels, hotel_source = MockTravelProvider().search_lodging_with_source(
+        "Goa", date(2026, 10, 10), 3, 1
+    )
+
+    assert flights and hotels
+    assert flight_source.status == hotel_source.status == "sample"

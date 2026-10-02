@@ -261,9 +261,12 @@ renders `₹2,30,610` (with Indian digit grouping, via `en-IN`). See
 data — plausible fiction, not quotes — so the whole system runs end to end with
 no third-party keys and the tests never touch a network.
 
-`TRAVELMATE_PROVIDER=live` serves **live flight fares from Google Flights**,
-via SerpApi's hosted MCP server, and mock data for everything else — lodging,
-attractions and weather still have no real source. Needs `SERPAPI_FLIGHTS_API_KEY`.
+`TRAVELMATE_PROVIDER=live` serves **live flight fares from Google Flights** and
+**live hotel prices from Google Hotels**, both via SerpApi's hosted MCP
+server, each through the retry and fallback chain below, and mock data for
+everything else: attractions and weather still have no real source. Needs
+`SERPAPI_FLIGHTS_API_KEY` and `SERPAPI_HOTEL_API_KEY` (two SerpApi accounts,
+each with its own 250-a-month quota).
 
 ### MCP sessions are shared
 
@@ -382,6 +385,29 @@ Each leg's result carries a `DataSource` (live, cached, stale, unavailable
 or sample) saved on the itinerary, and the page prints it above the table.
 Mock data is labelled "Sample data, not real prices" because it was
 mistaken for real fares twice.
+
+### Live hotel prices (`TRAVELMATE_PROVIDER=live`)
+
+`app/providers/google_hotels.py` runs one Google Hotels search per trip
+(`engine=google_hotels`) for the destination, the stay's dates and the party
+size, priced in rupees, on the hotel account (`SERPAPI_HOTEL_API_KEY`).
+
+- **What's offered:** priced hotels rated at least 3.5★ on Google, cheapest
+  first, at most 5. The first is booked by default, the same rule as before:
+  the rating floor keeps "cheapest" from meaning a poorly reviewed place, and
+  "a better rated hotel" in a revision switches among the rest.
+- **What's stored:** each hotel's `total` is Google's price for the whole
+  stay for that party, and `rating` is Google's 0–5 stars.
+- **Fallback:** the same chain as flights (`fetch_with_fallback`), with its
+  own circuit breaker, since it's a separate account and quota.
+- **No Google Maps fallback,** though the first sketch had one. Google's terms
+  for Maps Grounding Lite forbid storing its results, and hotels are saved
+  with every trip.
+- **One search for the whole trip:** a trip across several cities still gets
+  hotels for the destination as a whole.
+
+Measured: Kochi, 27–30 Oct, 2 adults returned 18 properties, 5 kept
+(₹2,357–3,385 a night), in 5.4 s, then 0.0 s from the cache.
 
 ### Real fetch clients (built, tested, not wired into the pipeline yet)
 
