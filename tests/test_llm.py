@@ -157,4 +157,46 @@ def test_the_itinerary_agent_sends_its_schema(provider, trip_request):
 
     node(state)
 
-    assert llm.calls[0]["schema"] is DraftItinerary
+    schema = llm.calls[0]["schema"]
+    assert issubclass(schema, DraftItinerary)
+    days = strict_schema(schema)["properties"]["days"]
+    assert days["minItems"] == days["maxItems"] == trip_request.nights + 1
+
+
+def test_stream_sends_the_same_request_with_stream_on_and_yields_the_text():
+    class StreamingClient:
+        def __init__(self):
+            self.sent = {}
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+        def _create(self, **kwargs):
+            self.sent = kwargs
+
+            def chunk(text, refusal=None):
+                delta = SimpleNamespace(content=text, refusal=refusal)
+                return SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
+
+            return iter(
+                [chunk('{"days": ['), SimpleNamespace(choices=[]), chunk(None), chunk("]}")]
+            )
+
+    client = StreamingClient()
+    llm = OpenAILLM(client, model="gpt-4o-mini")
+
+    text = "".join(llm.stream(system="s", user="u", json_mode=True, schema=DraftItinerary))
+
+    assert text == '{"days": []}'
+    assert client.sent["stream"] is True
+    assert client.sent["response_format"]["json_schema"]["name"] == "DraftItinerary"
+
+
+def test_the_draft_schema_requires_exactly_the_trips_days():
+    """Live, the plain schema let gpt-4o-mini stop after one day of a 4-day
+    trip in 1-3 answers out of 4; with the exact length, 6 of 6 were complete."""
+    from app.models.itinerary import draft_itinerary_for
+
+    days = strict_schema(draft_itinerary_for(4))["properties"]["days"]
+
+    assert days["minItems"] == 4 and days["maxItems"] == 4
+    assert draft_itinerary_for(4) is draft_itinerary_for(4)  # built once per length
+    assert draft_itinerary_for(4).__name__ == "DraftItinerary"

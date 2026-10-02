@@ -10,6 +10,7 @@ page when the graph is streamed (app/jobs.py) and does nothing otherwise.
 """
 
 import json
+import logging
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
@@ -32,13 +33,15 @@ from app.agent.stream_json import DayStreamer
 from app.models.itinerary import (
     DataSource,
     DayPlan,
-    DraftItinerary,
     FlightLeg,
     Itinerary,
     LodgingOption,
     PlannedTrip,
+    draft_itinerary_for,
 )
 from app.providers.base import TravelProvider
+
+logger = logging.getLogger(__name__)
 
 # Rough daily-spend-per-person bands in rupees, used only to steer destination
 # search when the traveller didn't name one. Independent of any provider's
@@ -272,20 +275,21 @@ def _flight_options(options: list[dict]) -> list[FlightLeg]:
     return [FlightLeg(**option) for option in options]
 
 
-def _write_itinerary(llm: LLM, user_prompt: str) -> str:
+def _write_itinerary(llm: LLM, user_prompt: str, day_count: int) -> str:
     """The itinerary agent's answer. Streamed where the LLM supports it, so
     each day can be shown the moment it's written; the full text is still
     returned and validated as a whole afterwards."""
+    schema = draft_itinerary_for(day_count)
     stream = getattr(llm, "stream", None)
     if stream is None:
         return llm.complete(
-            system=ITINERARY_AGENT_SYSTEM, user=user_prompt, json_mode=True, schema=DraftItinerary
+            system=ITINERARY_AGENT_SYSTEM, user=user_prompt, json_mode=True, schema=schema
         )
 
     streamer = DayStreamer()
     parts: list[str] = []
     for chunk in stream(
-        system=ITINERARY_AGENT_SYSTEM, user=user_prompt, json_mode=True, schema=DraftItinerary
+        system=ITINERARY_AGENT_SYSTEM, user=user_prompt, json_mode=True, schema=schema
     ):
         parts.append(chunk)
         for raw_day in streamer.feed(chunk):
@@ -383,10 +387,11 @@ def build_itinerary_node(provider: TravelProvider, llm: LLM, max_retries: int):
             if attempt > 1:
                 # Days already shown came from an attempt that was rejected.
                 emit({"type": "days_reset"})
-            raw = _write_itinerary(llm, user_prompt)
+            raw = _write_itinerary(llm, user_prompt, len(trip_dates))
             try:
                 draft = parse_itinerary(raw, request)
             except ItineraryValidationError as exc:
+                logger.warning("itinerary attempt %d rejected: %s", attempt, exc.feedback)
                 feedback = exc.feedback
                 last_error = exc.feedback
                 continue

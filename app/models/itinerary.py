@@ -13,9 +13,10 @@ priced in dollars and relabelling it rupees would be a lie.
 """
 
 from datetime import date, datetime, timedelta
+from functools import lru_cache
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, create_model, model_validator
 
 ActivityCategory = Literal[
     "food", "sightseeing", "transit", "lodging", "activity", "rest"
@@ -173,6 +174,24 @@ class DraftItinerary(BaseModel):
 
     days: list[DayPlan]
     notes: list[str] = Field(default_factory=list)
+
+
+@lru_cache
+def draft_itinerary_for(day_count: int) -> type[DraftItinerary]:
+    """`DraftItinerary` requiring exactly `day_count` days.
+
+    Sent as the structured-output schema, `minItems` = `maxItems` = the
+    trip's length stops the model ending the list early. Seen live with the
+    plain schema: gpt-4o-mini returned a single day for a 4-day trip in 1-3
+    answers out of 4, which the retry loop hid at the cost of extra calls,
+    and once failed a plan outright after three tries. With the exact length,
+    6 of 6 came back complete.
+    """
+    return create_model(
+        "DraftItinerary",
+        __base__=DraftItinerary,
+        days=(list[DayPlan], Field(min_length=day_count, max_length=day_count)),
+    )
 
 
 SourceStatus = Literal["live", "cached", "stale", "unavailable", "sample"]

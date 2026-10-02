@@ -91,15 +91,12 @@ form.addEventListener("submit", async (event) => {
   resultEl.hidden = true;
   reviseCard.hidden = true;
   submitButton.disabled = true;
-  setStatus(
-    "loading",
-    "Working on it — a place search takes a few seconds; planning a trip makes several " +
-      "OpenAI calls and can take 30-60 seconds..."
-  );
+  setStatus("loading", "Starting…");
 
   try {
-    // /ask lets the sentence decide: a trip to plan, places to find, or a route.
-    const response = await fetch("/ask", {
+    // A job runs on the server and streams what it's doing (app/jobs.py);
+    // the sentence decides whether it's a trip, places or a route.
+    const response = await fetch("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -111,24 +108,146 @@ form.addEventListener("submit", async (event) => {
       }),
     });
     const data = await response.json();
-
     if (!response.ok) {
       throw new Error(extractErrorMessage(data));
     }
-
-    hideStatus();
-    if (data.kind === "places") renderPlaces(data.places);
-    else if (data.kind === "route") renderRoute(data.route);
-    else {
-      renderTrip(data.trip);
-      renderCityPlaces(data.places_by_city);
-    }
+    // In the URL, so a reload — or reopening the tab — picks the job back up.
+    history.replaceState(null, "", `#job=${data.job_id}`);
+    followJob(data.job_id);
   } catch (err) {
     setStatus("error", err.message || "Something went wrong.");
-  } finally {
     submitButton.disabled = false;
   }
 });
+
+// --- following a job's events ----------------------------------------------------
+// The server sends each step as it happens: status lines, flights and hotels
+// as they're found, each day the moment it's written, the saved trip, then
+// each city's places. `live` collects them; `renderLive` redraws from it.
+
+let jobSource = null;
+let live = null;
+
+function jobInUrl() {
+  const match = location.hash.match(/job=([A-Za-z0-9]+)/);
+  return match ? match[1] : null;
+}
+
+function followJob(jobId) {
+  if (jobSource) jobSource.close();
+  live = { kind: null, flights: null, hotels: null, days: [], trip: null, cities: [], failed: false };
+  submitButton.disabled = true;
+
+  jobSource = new EventSource(`/jobs/${encodeURIComponent(jobId)}/events`);
+  jobSource.onmessage = (message) => handleJobEvent(JSON.parse(message.data));
+  jobSource.onerror = () => {
+    // A dropped connection reconnects by itself (and resumes where it left
+    // off); CLOSED means the server doesn't know this job — it restarted, or
+    // the job is over an hour old.
+    if (jobSource && jobSource.readyState === EventSource.CLOSED) {
+      jobSource = null;
+      submitButton.disabled = false;
+      history.replaceState(null, "", location.pathname);
+      setStatus(
+        "error",
+        "This plan's progress isn't available any more (the server may have restarted). " +
+          "A trip that had finished is still saved; otherwise, please start again."
+      );
+    }
+  };
+}
+
+function handleJobEvent(event) {
+  switch (event.type) {
+    case "status":
+      setStatus("loading", event.message);
+      break;
+    case "intent":
+      live.kind = event.kind;
+      break;
+    case "flights":
+      live.flights = event;
+      renderLive();
+      break;
+    case "hotels":
+      live.hotels = event;
+      renderLive();
+      break;
+    case "day":
+      live.days.push(event.day);
+      renderLive();
+      break;
+    case "days_reset":
+      live.days = [];
+      renderLive();
+      break;
+    case "trip":
+      live.trip = event.trip;
+      renderLive();
+      break;
+    case "city":
+      live.cities.push(event.city);
+      renderLive();
+      break;
+    case "places":
+      renderPlaces(event.places);
+      break;
+    case "route":
+      renderRoute(event.route);
+      break;
+    case "error":
+      live.failed = true;
+      setStatus("error", event.detail);
+      break;
+    case "done":
+      jobSource.close();
+      jobSource = null;
+      if (!live.failed) hideStatus();
+      submitButton.disabled = false;
+      break;
+  }
+}
+
+// Cities arrive in whatever order their searches finish; shown in the order
+// the trip visits them.
+function citiesInTripOrder(trip, cities) {
+  const order = new Map();
+  for (const day of trip.itinerary.days) {
+    const city = (day.city || "").toLowerCase();
+    if (city && !order.has(city)) order.set(city, order.size);
+  }
+  const rank = (c) => order.get(c.city.toLowerCase()) ?? order.size;
+  return [...cities].sort((a, b) => rank(a) - rank(b));
+}
+
+function renderLive() {
+  if (live.trip) {
+    renderTrip(live.trip);
+    renderCityPlaces(citiesInTripOrder(live.trip, live.cities));
+    return;
+  }
+
+  // Still planning: show what's arrived so far.
+  reviseCard.hidden = true;
+  resultEl.hidden = false;
+  const flights = live.flights;
+  const hotels = live.hotels;
+  const writing = live.days.length ? "Writing the next day…" : "Writing your plan…";
+  resultEl.innerHTML = `
+    <div class="result-header">
+      <h2>Your Trip Plan</h2>
+      <span class="trip-id">Planning…</span>
+    </div>
+    ${flights ? renderFlightTable("Outbound options", flights.outbound_options, null, flights.outbound_source) : ""}
+    ${flights ? renderFlightTable("Return options", flights.return_options, null, flights.return_source) : ""}
+    ${hotels ? renderHotelCard(hotels.options, hotels.source) : ""}
+    <div class="card">
+      <h3>Day by day</h3>
+      ${live.days.map(renderDay).join("")}
+      <p class="writing">${writing}</p>
+    </div>
+  `;
+}
 
 reviseForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -154,6 +273,9 @@ reviseForm.addEventListener("submit", async (event) => {
 
     hideStatus();
     reviseInput.value = "";
+    // Newer than what the job in the URL produced, so a reload mustn't
+    // bring that back.
+    history.replaceState(null, "", location.pathname);
     renderTrip(data.trip);
   } catch (err) {
     // The plan on screen is untouched, so the change can simply be retried.
@@ -481,6 +603,22 @@ function renderRoute(route) {
     </div>`);
 }
 
+function renderHotelCard(options, source) {
+  if (options && options.length) {
+    return `<div class="card">
+        <h3>Where to stay</h3>
+        ${sourceLine(source)}
+        <ul class="hotel-list">
+          ${options.map((h, i) => renderHotelItem(h, i === 0)).join("")}
+        </ul>
+      </div>`;
+  }
+  if (source && source.status === "unavailable") {
+    return `<div class="card"><h3>Where to stay</h3>${sourceLine(source)}</div>`;
+  }
+  return "";
+}
+
 function renderTrip(trip) {
   const it = trip.itinerary;
   tripCurrency = it.currency || "INR";
@@ -505,19 +643,7 @@ function renderTrip(trip) {
     ${renderFlightTable("Outbound options", it.outbound_options, it.outbound_flight, it.outbound_source)}
     ${renderFlightTable("Return options", it.return_options, it.return_flight, it.return_source)}
 
-    ${
-      it.lodging_options.length
-        ? `<div class="card">
-            <h3>Where to stay</h3>
-            ${sourceLine(it.lodging_source)}
-            <ul class="hotel-list">
-              ${it.lodging_options.map((h, i) => renderHotelItem(h, i === 0)).join("")}
-            </ul>
-          </div>`
-        : it.lodging_source && it.lodging_source.status === "unavailable"
-          ? `<div class="card"><h3>Where to stay</h3>${sourceLine(it.lodging_source)}</div>`
-          : ""
-    }
+    ${renderHotelCard(it.lodging_options, it.lodging_source)}
 
     <div class="card">
       <h3>Day by day</h3>
@@ -525,3 +651,7 @@ function renderTrip(trip) {
     </div>
   `;
 }
+
+// A job in the URL — after a reload, or a reopened tab — is picked back up.
+const jobToResume = jobInUrl();
+if (jobToResume) followJob(jobToResume);

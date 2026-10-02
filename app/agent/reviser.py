@@ -36,12 +36,12 @@ from app.agent.prompts import (
 from app.core.config import Settings, get_settings
 from app.models.itinerary import (
     DayPlan,
-    DraftItinerary,
     FlightLeg,
     Itinerary,
     LodgingOption,
     PlannedTrip,
     TripRequest,
+    draft_itinerary_for,
 )
 
 logger = logging.getLogger(__name__)
@@ -243,7 +243,7 @@ def _revise_days(
             system=REVISE_ITINERARY_SYSTEM,
             user=user_prompt,
             json_mode=True,
-            schema=DraftItinerary,
+            schema=draft_itinerary_for(len(trip_dates)),
         )
         try:
             draft = parse_itinerary(raw, request)

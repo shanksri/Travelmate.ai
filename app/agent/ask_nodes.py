@@ -118,6 +118,7 @@ def build_city_places_node():
 
     def node(payload: dict) -> dict:
         city, kind = payload["city"], payload["kind"]
+        status("city_places", f"Finding {kind} in {city}…")
         try:
             found = CityPlaces(
                 city=city, places=google_maps.search_places(f"best {kind} in {city}")

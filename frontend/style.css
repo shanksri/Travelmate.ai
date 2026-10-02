@@ -304,6 +304,13 @@ button[type="submit"]:not(:disabled):hover {
   padding-top: 0.85rem;
 }
 
+.writing {
+  margin: 0.4rem 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-style: italic;
+}
+
 .source-line {
   margin: -0.4rem 0 0.75rem;
   font-size: 0.8rem;

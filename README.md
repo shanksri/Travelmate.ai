@@ -7,33 +7,54 @@ and hand back a concrete day-by-day itinerary.
 
 ## Architecture
 
+Every request runs as a LangGraph graph (`app/agent/graph.py`,
+`app/agent/reviser.py`). The prompt box's graph:
+
 ```
- free text ──▶ prompt_parser ──┐
-                                ▼
-                          TripRequest ────────▶ ┌──────────────────────┐
-                                                 │ resolve_destination  │  (only runs if no
-                                                 └──────────┬───────────┘   destination was given)
-                                                            │
-                                             ┌──────────────┴──────────────┐
-                                             ▼                              ▼
-                                    ┌─────────────────┐           ┌─────────────────┐
-                                    │  flight_agent    │           │  hotel_agent     │
-                                    └────────┬────────┘           └────────┬────────┘
-                                     search_flights,                search_lodging
-                                     both legs (outbound+return)
-                                             └──────────────┬──────────────┘
-                                                            ▼
-                                                 ┌──────────────────────┐
-                                                 │   itinerary_agent     │  search_attractions,
-                                                 │  (JSON-mode, retries) │  get_weather_outlook
-                                                 └──────────┬───────────┘
-                                                            ▼
-                                                 ┌──────────────────────┐
-                                                 │ final_response_agent  │
-                                                 └──────────┬───────────┘
-                                                            ▼
-                                                      PlannedTrip
+ prompt ──▶ interpret ──┬──▶ places ─────────────────────────────────────▶ end
+ (+ page    (one LLM    ├──▶ route ──────────────────────────────────────▶ end
+  choices)   call)      └──▶ prepare_trip ──▶ resolve_destination
+                                                     │
+                                       ┌─────────────┴─────────────┐
+                                       ▼                           ▼
+                                  flight_agent                hotel_agent      (parallel)
+                                       └─────────────┬─────────────┘
+                                                     ▼
+                                              itinerary_agent   (streams each day)
+                                                     ▼
+                                           final_response_agent
+                                                     ▼
+                                               package_trip ──▶ city_places × N ──▶ end
+                                                                (parallel, one per city,
+                                                                 only with Restaurants ticked)
 ```
+
+`POST /trips/plan` and the CLI run the trip steps alone (resolve_destination
+… package_trip). Revisions are a graph too: route_change → apply_picks →
+revise_days (only when the days change) → package_revision, with any step
+able to end it with a reason.
+
+**Streaming.** The page starts a job (`POST /jobs`) and gets its id at once,
+then listens to `GET /jobs/{id}/events` (Server-Sent Events). The job runs
+the ask graph on a server thread (`app/jobs.py`) and records each step as it
+happens:
+
+- status lines, then flights and hotels as they're found;
+- each day the moment the AI finishes writing it (the itinerary LLM call
+  streams, and `app/agent/stream_json.py` picks finished days out of the
+  partial JSON);
+- the saved trip, then each city's places.
+
+Steps report progress through `app/agent/events.py`, which does nothing when
+a graph isn't being streamed. The job id goes in the page URL, so a reload
+reconnects and replays; closing the tab doesn't stop the job, and the trip is
+saved either way. Jobs live in the server process for an hour; a restart
+forgets them (saved trips stay).
+
+Measured (Varanasi → Kochi, 3 nights, 2 people, flights, hotels and
+restaurants): hotels at **4.4 s**, flights at 6.4 s, day 1 at 10.8 s, the
+full trip at 24.9 s, done at 28.2 s. Before, the page showed nothing until
+the end.
 
 Flight and hotel search run in parallel — neither depends on the other — then
 both feed the itinerary agent, which needs both before it can plan a single
@@ -138,7 +159,9 @@ uvicorn app.main:app --reload
 |---|---|---|
 | `GET` | `/` | The frontend — plan a trip, find places or measure a route from one sentence |
 | `GET` | `/health` | Liveness, plus the configured model, provider and store |
-| `POST` | `/ask` | One sentence → a planned trip, places from Google Maps, or a route — whichever it asks for. What the frontend calls |
+| `POST` | `/jobs` | Start the same as `/ask` as a background job; returns `{"job_id"}` at once (202). What the frontend calls |
+| `GET` | `/jobs/{id}/events` | The job's progress as Server-Sent Events, replayable; resumes after `Last-Event-ID` |
+| `POST` | `/ask` | One sentence → a planned trip, places from Google Maps, or a route — whichever it asks for. Blocking; same graph as `/jobs` |
 | `POST` | `/trips/plan` | Plan a trip from structured parameters; returns the stored `PlannedTrip` |
 | `POST` | `/trips/plan-from-prompt` | Plan a trip from one free-text sentence, whatever it asks for |
 | `POST` | `/trips/{thread_id}/revise` | Apply one change to an existing trip; saves and returns the next version |

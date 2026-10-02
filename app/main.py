@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import ask, health, trips
+from app.api.routes import ask, health, jobs, trips
 from app.core.logging import configure_logging
 from app.providers.aviationstack import fetch_flights
 from app.providers.mcp_runtime import shutdown_mcp_runtime
@@ -40,6 +40,7 @@ app = FastAPI(
 app.include_router(health.router)
 app.include_router(trips.router)
 app.include_router(ask.router)
+app.include_router(jobs.router)
 
 
 # --- Frontend -----------------------------------------------------------

@@ -516,7 +516,9 @@ def test_the_router_and_the_day_planner_send_their_schemas(planned, trip_request
 
     schemas = {c["system"]: c["schema"] for c in llm.calls}
     assert schemas[ROUTE_CHANGE_SYSTEM] is ChangeRoute
-    assert schemas[REVISE_ITINERARY_SYSTEM] is DraftItinerary
+    assert issubclass(schemas[REVISE_ITINERARY_SYSTEM], DraftItinerary)
+    days_schema = schemas[REVISE_ITINERARY_SYSTEM].model_json_schema()["properties"]["days"]
+    assert days_schema["minItems"] == days_schema["maxItems"] == len(planned.itinerary.days)
     assert schemas[FINAL_RESPONSE_AGENT_SYSTEM] is None  # plain text
 
 

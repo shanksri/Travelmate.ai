@@ -1,12 +1,12 @@
 import logging
 from collections.abc import Callable
 
-import openai
 from fastapi import APIRouter, HTTPException, status
 
-from app.agent.planner import PlanningError, plan_trip, plan_trip_from_prompt
+from app.agent.planner import plan_trip, plan_trip_from_prompt
 from app.agent.prompt_parser import PromptParseError
-from app.agent.reviser import RevisionDeclined, RevisionError, revise_trip
+from app.agent.reviser import revise_trip
+from app.api.errors import run_translating_errors
 from app.api.schemas import (
     PlanFromPromptRequest,
     PlanTripRequest,
@@ -16,7 +16,6 @@ from app.api.schemas import (
     TripListResponse,
 )
 from app.models.itinerary import PlannedTrip
-from app.providers.google_maps import GoogleMapsError
 from app.store import get_store
 
 logger = logging.getLogger(__name__)
@@ -30,51 +29,6 @@ def _run(planning_call: Callable[[], PlannedTrip]) -> PlanTripResponse:
     trip = run_translating_errors(planning_call)
     get_store().save(trip)
     return PlanTripResponse(trip=trip)
-
-
-def run_translating_errors[T](call: Callable[[], T]) -> T:
-    """Run a planning, revising or answering call, turning the ways it can
-    fail into HTTP errors. Also used by app/api/routes/ask.py."""
-    try:
-        return call()
-    except openai.AuthenticationError as exc:
-        logger.warning("openai auth failed: %s", exc)
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "OpenAI credentials are missing or invalid — set OPENAI_API_KEY.",
-        ) from exc
-    except openai.RateLimitError as exc:
-        raise HTTPException(
-            status.HTTP_429_TOO_MANY_REQUESTS, "Rate limited by the OpenAI API."
-        ) from exc
-    except openai.APIStatusError as exc:
-        logger.error("openai api error %s: %s", exc.status_code, exc.message)
-        raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY, f"OpenAI API error: {exc.message}"
-        ) from exc
-    except openai.APIConnectionError as exc:
-        raise HTTPException(
-            status.HTTP_504_GATEWAY_TIMEOUT, "Could not reach the OpenAI API."
-        ) from exc
-    except PlanningError as exc:
-        logger.error("planning failed: %s", exc)
-        raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY, f"The planner did not finish: {exc}"
-        ) from exc
-    except RevisionDeclined as exc:
-        # Nothing is saved: a version identical to the last one would only
-        # pad the history. The reason is the planner's own, for the traveller.
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT, f"Couldn't apply this change: {exc}"
-        ) from exc
-    except RevisionError as exc:
-        logger.error("revision failed: %s", exc)
-        raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY, f"The change could not be applied: {exc}"
-        ) from exc
-    except GoogleMapsError as exc:
-        logger.error("google maps failed: %s", exc)
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Google Maps: {exc}") from exc
 
 
 @router.post("/plan", response_model=PlanTripResponse)

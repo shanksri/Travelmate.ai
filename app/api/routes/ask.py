@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, status
 
 from app.agent.assistant import Answer, answer_prompt
 from app.agent.prompt_parser import PromptParseError
-from app.api.routes.trips import run_translating_errors
+from app.api.errors import run_translating_errors
 from app.api.schemas import PlanFromPromptRequest
 from app.store import get_store
 
