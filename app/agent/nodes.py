@@ -14,7 +14,10 @@ import logging
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
+from typing import TypedDict
 
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 from pydantic import ValidationError
 
 from app.agent.errors import PlanningError
@@ -33,10 +36,12 @@ from app.agent.stream_json import DayStreamer
 from app.models.itinerary import (
     DataSource,
     DayPlan,
+    DraftItinerary,
     FlightLeg,
     Itinerary,
     LodgingOption,
     PlannedTrip,
+    TripRequest,
     draft_itinerary_for,
 )
 from app.providers.base import TravelProvider
@@ -301,7 +306,81 @@ def _write_itinerary(llm: LLM, user_prompt: str, day_count: int) -> str:
     return "".join(parts)
 
 
+# --- the itinerary agent ---------------------------------------------------------
+#
+# A subgraph with its own state, which the trip graph never sees: the trip
+# graph hands it a prompt and gets back a draft. Its short-term memory is
+# `rejections`, why each earlier attempt failed validation. Every retry is
+# shown all of them, not only the last, so fixing one mistake doesn't bring
+# back the one before it.
+#
+#   START -> write_days -> check_days -> END   (a valid draft, or out of attempts)
+#                ^              |
+#                +--------------+              (rejected: again, with every reason)
+#
+# Nothing here is checkpointed: the memory only matters while the trip is
+# being written. The days it streams reach the page because app/jobs.py
+# streams with `subgraphs=True`.
+
+
+class ItineraryAgentState(TypedDict, total=False):
+    request: TripRequest
+    base_prompt: str
+    day_count: int
+    attempts: int
+    raw: str
+    rejections: list[str]
+    draft: DraftItinerary | None
+
+
+def _with_rejections(base_prompt: str, rejections: list[str]) -> str:
+    if not rejections:
+        return base_prompt
+    if len(rejections) == 1:
+        return (
+            f"{base_prompt}\n\nYour previous attempt was rejected: {rejections[0]}\n"
+            "Fix it and return the complete JSON again."
+        )
+    listed = "\n".join(f"{i}. {reason}" for i, reason in enumerate(rejections, 1))
+    return (
+        f"{base_prompt}\n\nYour earlier attempts were rejected, for these reasons:\n"
+        f"{listed}\nFix all of them and return the complete JSON again."
+    )
+
+
+def build_itinerary_agent(llm: LLM) -> CompiledStateGraph:
+    def write_days(state: ItineraryAgentState) -> dict:
+        if state["rejections"]:
+            # Days already shown came from an attempt that was rejected.
+            emit({"type": "days_reset"})
+        prompt = _with_rejections(state["base_prompt"], state["rejections"])
+        return {"raw": _write_itinerary(llm, prompt, state["day_count"])}
+
+    def check_days(state: ItineraryAgentState) -> dict:
+        try:
+            return {"draft": parse_itinerary(state["raw"], state["request"])}
+        except ItineraryValidationError as exc:
+            attempt = len(state["rejections"]) + 1
+            logger.warning("itinerary attempt %d rejected: %s", attempt, exc.feedback)
+            return {"rejections": [*state["rejections"], exc.feedback]}
+
+    def next_step(state: ItineraryAgentState) -> str:
+        if state.get("draft") is not None or len(state["rejections"]) >= state["attempts"]:
+            return END
+        return "write_days"
+
+    graph = StateGraph(ItineraryAgentState)
+    graph.add_node("write_days", write_days)
+    graph.add_node("check_days", check_days)
+    graph.add_edge(START, "write_days")
+    graph.add_edge("write_days", "check_days")
+    graph.add_conditional_edges("check_days", next_step, ["write_days", END])
+    return graph.compile()
+
+
 def build_itinerary_node(provider: TravelProvider, llm: LLM, max_retries: int):
+    agent = build_itinerary_agent(llm)
+
     def node(state: TravelState) -> dict:
         request = state["request"]
         destination = state["resolved_destination"]
@@ -373,62 +452,55 @@ def build_itinerary_node(provider: TravelProvider, llm: LLM, max_retries: int):
             f"{json.dumps(trip_dates)}"
         )
 
-        feedback = ""
-        last_error = ""
         attempts = max_retries + 1
-        for attempt in range(1, attempts + 1):
-            user_prompt = base_prompt
-            if feedback:
-                user_prompt += (
-                    f"\n\nYour previous attempt was rejected: {feedback}\n"
-                    "Fix it and return the complete JSON again."
-                )
-
-            if attempt > 1:
-                # Days already shown came from an attempt that was rejected.
-                emit({"type": "days_reset"})
-            raw = _write_itinerary(llm, user_prompt, len(trip_dates))
-            try:
-                draft = parse_itinerary(raw, request)
-            except ItineraryValidationError as exc:
-                logger.warning("itinerary attempt %d rejected: %s", attempt, exc.feedback)
-                feedback = exc.feedback
-                last_error = exc.feedback
-                continue
-
-            activity_cost = sum(
-                activity.estimated_cost or 0
-                for day in draft.days
-                for activity in day.activities
-            )
-            itinerary = Itinerary(
-                destination=destination,
-                start_date=request.start_date,
-                end_date=request.end_date,
-                travelers=request.travelers,
-                outbound_flight=outbound_flight,
-                return_flight=return_flight,
-                outbound_options=_flight_options(flight_results.get("outbound_options", [])),
-                return_options=_flight_options(flight_results.get("return_options", [])),
-                lodging_options=lodging,
-                outbound_source=flight_results.get("outbound_source"),
-                return_source=flight_results.get("return_source"),
-                lodging_source=state["hotel_results"].get("source"),
-                days=draft.days,
-                total_estimated_cost=flight_cost + hotel_cost + activity_cost,
-                notes=draft.notes,
-            )
+        result = agent.invoke(
+            {
+                "request": request,
+                "base_prompt": base_prompt,
+                "day_count": len(trip_dates),
+                "attempts": attempts,
+                "rejections": [],
+                "draft": None,
+            },
+            # Two steps per attempt; LangGraph's default limit is 25.
+            {"recursion_limit": 2 * attempts + 2},
+        )
+        draft, rejections = result.get("draft"), result["rejections"]
+        if draft is None:
             return {
-                "itinerary": itinerary,
-                "messages": [
-                    f"itinerary_agent: built a {len(itinerary.days)}-day plan (attempt {attempt})"
+                "itinerary": None,
+                "errors": [
+                    f"itinerary_agent: gave up after {attempts} attempt(s): {rejections[-1]}"
                 ],
+                "messages": [f"itinerary_agent: failed after {attempts} attempt(s)"],
             }
 
+        activity_cost = sum(
+            activity.estimated_cost or 0 for day in draft.days for activity in day.activities
+        )
+        itinerary = Itinerary(
+            destination=destination,
+            start_date=request.start_date,
+            end_date=request.end_date,
+            travelers=request.travelers,
+            outbound_flight=outbound_flight,
+            return_flight=return_flight,
+            outbound_options=_flight_options(flight_results.get("outbound_options", [])),
+            return_options=_flight_options(flight_results.get("return_options", [])),
+            lodging_options=lodging,
+            outbound_source=flight_results.get("outbound_source"),
+            return_source=flight_results.get("return_source"),
+            lodging_source=state["hotel_results"].get("source"),
+            days=draft.days,
+            total_estimated_cost=flight_cost + hotel_cost + activity_cost,
+            notes=draft.notes,
+        )
         return {
-            "itinerary": None,
-            "errors": [f"itinerary_agent: gave up after {attempts} attempt(s): {last_error}"],
-            "messages": [f"itinerary_agent: failed after {attempts} attempt(s)"],
+            "itinerary": itinerary,
+            "messages": [
+                f"itinerary_agent: built a {len(itinerary.days)}-day plan "
+                f"(attempt {len(rejections) + 1})"
+            ],
         }
 
     return node

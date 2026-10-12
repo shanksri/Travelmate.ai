@@ -194,6 +194,13 @@ When you decline, return every day
 unchanged and add one note that starts exactly with "Couldn't apply:",
 followed by one sentence the traveller will read, saying why.
 
+You may also be shown the earlier changes to this trip, and the days the
+latest one replaced. They are there so you understand what the traveller
+refers to: "undo that", "put it back", "the temple I asked for before". To
+undo a change, put back the days it replaced exactly as recorded, and leave
+every other day as it is now. A change that wasn't made earlier is no reason
+to refuse it now; judge every request afresh.
+
 Rules:
 - Output a single JSON object and nothing else — no prose, no markdown fences.
 - Return the COMPLETE plan, every day of it, not just the days you changed.
@@ -240,6 +247,15 @@ are given the flight options found for each leg (with the booked one \
 marked), the hotel options (with the selected one marked), and a one-line \
 outline of each day. Decide which parts the change is about. You do not \
 write the new plan yourself.
+
+`earlier_changes`, when given, is what the traveller already asked for on this
+trip, oldest first, and whether each was made. Use it to work out what they
+refer to: "undo that", "go back to the previous hotel", "the place I asked
+for before". To undo a flight or hotel switch, pick the option it switched
+from. To undo a change to the days, set `itinerary` to an instruction naming
+the change to undo, e.g. 'Undo "add Rameshwaram": put those days back as they
+were'. A change that wasn't made before can be asked for again; judge it
+afresh.
 
 - outbound / return: the index of the flight option to book instead, when the
   change is about that leg ("a cheaper flight", "nonstop only", "leave

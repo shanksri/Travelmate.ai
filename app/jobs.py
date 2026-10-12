@@ -135,12 +135,18 @@ def run_ask(
     `error` event, and the job always ends with `done`."""
     graph = build_ask_graph(provider, llm, max_itinerary_retries)
     try:
-        for mode, chunk in graph.stream(
-            initial_ask_state(prompt, choices), stream_mode=["updates", "custom"]
+        # subgraphs=True, or the events an agent's own subgraph emits (the
+        # itinerary agent's days) never reach the stream.
+        for namespace, mode, chunk in graph.stream(
+            initial_ask_state(prompt, choices),
+            stream_mode=["updates", "custom"],
+            subgraphs=True,
         ):
             if mode == "custom":
                 job.add(chunk)
                 continue
+            if namespace:
+                continue  # a step inside a subgraph; the page hears its parent step
             for step, update in chunk.items():
                 if step == "package_trip":
                     # Saved before it's announced, so a page that reloads on

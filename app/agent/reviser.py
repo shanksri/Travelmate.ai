@@ -12,15 +12,21 @@ the return flight, the hotel, the day plan — and then touches only those:
 
 Dates and destination never change. The result is appended as the next
 version of the same thread rather than replacing it — see app/store.py.
+
+The agent remembers the trip's earlier changes: what was asked for, whether
+it was made, and what it changed. That's what lets "undo that" or "go back
+to the other hotel" mean something. The memory is a channel of the graph's
+state that a checkpointer carries from one change to the next, under the
+trip's thread_id (app/agent/memory.py).
 """
 
 import json
 import logging
-import operator
 import uuid
 from typing import Annotated, TypedDict
 
 import openai
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -28,6 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from app.agent.events import status
 from app.agent.itinerary_json import ItineraryValidationError, parse_itinerary
 from app.agent.llm import LLM, OpenAILLM
+from app.agent.memory import get_checkpointer
 from app.agent.prompts import (
     FINAL_RESPONSE_AGENT_SYSTEM,
     REVISE_ITINERARY_SYSTEM,
@@ -158,24 +165,26 @@ def _check_indexes(route: ChangeRoute, itinerary: Itinerary) -> str | None:
 
 
 def _route_change(
-    previous: PlannedTrip, change_request: str, llm: LLM, attempts: int
+    previous: PlannedTrip,
+    change_request: str,
+    memory: list["EditTurn"],
+    llm: LLM,
+    attempts: int,
 ) -> ChangeRoute:
     itinerary = previous.itinerary
-    base_prompt = json.dumps(
-        {
-            "change_request": change_request,
-            "outbound_options": _flight_menu(
-                itinerary.outbound_options, itinerary.outbound_flight
-            ),
-            "return_options": _flight_menu(itinerary.return_options, itinerary.return_flight),
-            "hotel_options": _hotel_menu(itinerary.lodging_options),
-            "days": [
-                {"day": d.day, "date": d.date.isoformat(), "summary": d.summary}
-                for d in itinerary.days
-            ],
-        },
-        default=str,
-    )
+    question = {
+        "change_request": change_request,
+        "outbound_options": _flight_menu(itinerary.outbound_options, itinerary.outbound_flight),
+        "return_options": _flight_menu(itinerary.return_options, itinerary.return_flight),
+        "hotel_options": _hotel_menu(itinerary.lodging_options),
+        "days": [
+            {"day": d.day, "date": d.date.isoformat(), "summary": d.summary}
+            for d in itinerary.days
+        ],
+    }
+    if memory:
+        question["earlier_changes"] = _recall(memory)
+    base_prompt = json.dumps(question, default=str)
 
     feedback = ""
     for _ in range(attempts):
@@ -206,9 +215,11 @@ def _revise_days(
     instruction: str,
     llm: LLM,
     attempts: int,
+    recalled: str = "",
 ) -> tuple[list[DayPlan], list[str]]:
     """Re-plan the days for `instruction`. Raises RevisionDeclined if the
-    model hands every day back unchanged."""
+    model hands every day back unchanged. `recalled` is the agent's memory of
+    earlier changes, as `_recall_for_days` words it."""
     # Only the days go to the model. Flights and lodging are withheld on
     # purpose — it cannot change what it cannot see. The previous notes are
     # withheld too: a note from an earlier refusal ("X is not included…")
@@ -224,6 +235,7 @@ def _revise_days(
         f"Travellers: {itinerary.travelers}\n"
         f"Pace: {request.pace}\n"
         f"Current plan: {current_days}\n\n"
+        f"{recalled}"
         f"The traveller asks: {instruction}\n\n"
         f"Return all {len(trip_dates)} days, using exactly these dates in this "
         f"order: {json.dumps(trip_dates)}"
@@ -265,28 +277,146 @@ def _rebooked(option: FlightLeg, change_request: str) -> FlightLeg:
     return option.model_copy(update={"rationale": f"Chosen on request: {change_request}"})
 
 
+# --- the agent's memory ------------------------------------------------------
+#
+# The last few changes asked for on this trip: whether each was made, and
+# what it changed. It's RevisionState's `memory` channel, which no input
+# sets, so the checkpointer brings it back from the trip's previous change
+# while every other channel starts fresh (`_new_change`).
+
+# How many earlier changes it remembers. Older ones drop off, so the prompts
+# stay the same size however long a trip is edited.
+MEMORY_TURNS = 6
+
+
+class EditTurn(BaseModel):
+    """One change the traveller asked for, as the revision agent remembers it."""
+
+    request: str
+    applied: bool
+    version: int | None = Field(default=None, description="The version it produced.")
+    changes: list[str] = Field(default_factory=list, description="What it changed, in words.")
+    days_before: list[DayPlan] = Field(
+        default_factory=list, description="The days it replaced, exactly as they were."
+    )
+
+
+def _remember(memory: list[EditTurn], new: list[EditTurn]) -> list[EditTurn]:
+    """The `memory` channel's reducer: add the new turn, keep the latest few."""
+    return (memory + new)[-MEMORY_TURNS:]
+
+
+def _flight_words(leg: FlightLeg | None) -> str:
+    if leg is None:
+        return "no flight"
+    when = leg.departure_at.strftime("%H:%M") if leg.departure_at else leg.depart_date.isoformat()
+    return f"{leg.carrier} at {when}"
+
+
+def _what_changed(before: Itinerary, after: Itinerary) -> tuple[list[str], list[DayPlan]]:
+    """What a change did, in words, and the days it replaced as they were."""
+    changes: list[str] = []
+    days_before: list[DayPlan] = []
+    for old, new in zip(before.days, after.days, strict=False):
+        if old.model_dump(mode="json") == new.model_dump(mode="json"):
+            continue
+        days_before.append(old)
+        if old.summary == new.summary:
+            changes.append(f'Day {old.day} ("{old.summary}"): its activities changed')
+        else:
+            changes.append(f'Day {old.day}: "{old.summary}" became "{new.summary}"')
+
+    for name, old_leg, new_leg in (
+        ("Outbound flight", before.outbound_flight, after.outbound_flight),
+        ("Return flight", before.return_flight, after.return_flight),
+    ):
+        if (old_leg or new_leg) and not _same_flight(old_leg, new_leg):
+            changes.append(f"{name}: {_flight_words(old_leg)} became {_flight_words(new_leg)}")
+
+    old_hotel = before.lodging_options[0].name if before.lodging_options else None
+    new_hotel = after.lodging_options[0].name if after.lodging_options else None
+    if old_hotel != new_hotel:
+        changes.append(f"Hotel: {old_hotel} became {new_hotel}")
+    return changes, days_before
+
+
+def _recall(memory: list[EditTurn]) -> list[str]:
+    """The earlier changes in words, oldest first."""
+    lines = []
+    for turn in memory:
+        if turn.applied:
+            lines.append(
+                f'"{turn.request}": made (version {turn.version}). ' + "; ".join(turn.changes)
+            )
+        else:
+            # Without the reason it was declined. A refusal shown to the model
+            # anchors it into refusing again (see `_revise_days`), and the
+            # traveller may be asking again because the refusal was wrong.
+            lines.append(f'"{turn.request}": not made')
+    return lines
+
+
+def _recall_for_days(memory: list[EditTurn]) -> str:
+    """The memory section of the day planner's prompt: the earlier changes in
+    words, plus the days the latest one replaced in full, which is what
+    "undo that" needs to put them back exactly."""
+    if not memory:
+        return ""
+    numbered = [f"{i}. {line}" for i, line in enumerate(_recall(memory), 1)]
+    text = "Earlier changes to this trip, oldest first:\n" + "\n".join(numbered)
+    latest = next((t for t in reversed(memory) if t.applied and t.days_before), None)
+    if latest:
+        replaced = json.dumps([day.model_dump(mode="json") for day in latest.days_before])
+        text += f'\n\nThe days "{latest.request}" replaced, exactly as they were before it: '
+        text += replaced
+    return text + "\n\n"
+
+
 # --- the revision graph ----------------------------------------------------------
 #
-#   START -> route_change -> (declined) ---------------------------------> END
-#                         -> apply_picks -> revise_days -> package_revision -> END
-#                                        -> package_revision ----------------> END
+#   START -> route_change -> (declined) -------------------------------> remember -> END
+#                         -> apply_picks -> revise_days -> package_revision -> remember -> END
+#                                        -> package_revision -----------> remember -> END
 #
 # `revise_days` runs only when the change is about the days; any step can
 # end it early with a reason in `declined`, and `revise_trip` raises that.
+# Every path ends in `remember`, which writes the change into the memory,
+# made or not.
 
 
 class RevisionState(TypedDict, total=False):
     previous: PlannedTrip
     change_request: str
-    route: ChangeRoute
+    route: ChangeRoute | None
     outbound: FlightLeg | None
     return_flight: FlightLeg | None
     lodging: list[LodgingOption]
     days: list[DayPlan]
     notes: list[str]
-    trace: Annotated[list[str], operator.add]
+    trace: list[str]
     declined: str | None
     trip: PlannedTrip | None
+    # Kept from one change to the next by the checkpointer; see above.
+    memory: Annotated[list[EditTurn], _remember]
+
+
+def _new_change(previous: PlannedTrip, change_request: str) -> RevisionState:
+    """The input for one change. It sets every channel except `memory`, so
+    nothing from the trip's previous change leaks into this one, while the
+    memory, left out, is restored from the checkpoint."""
+    return {
+        "previous": previous,
+        "change_request": change_request,
+        "route": None,
+        "outbound": None,
+        "return_flight": None,
+        "lodging": [],
+        "days": [],
+        "notes": [],
+        "trace": [],
+        "declined": None,
+        "trip": None,
+    }
 
 
 def _has_nothing_to_repick(itinerary: Itinerary) -> bool:
@@ -301,7 +431,11 @@ def _build_route_change_node(llm: LLM, attempts: int):
     def node(state: RevisionState) -> dict:
         previous = state["previous"]
         itinerary = previous.itinerary
+        memory = state.get("memory", [])
         status("route_change", "Working out what to change…")
+        recalled = (
+            [f"memory: recalled {len(memory)} earlier change(s) to this trip"] if memory else []
+        )
         start = {
             "outbound": itinerary.outbound_flight,
             "return_flight": itinerary.return_flight,
@@ -320,17 +454,18 @@ def _build_route_change_node(llm: LLM, attempts: int):
             return start | {
                 "route": ChangeRoute(itinerary=state["change_request"]),
                 "trace": [
+                    *recalled,
                     "change_router: skipped (no flights or hotel to re-pick; "
-                    "the change goes to the days)"
+                    "the change goes to the days)",
                 ],
             }
 
-        route = _route_change(previous, state["change_request"], llm, attempts)
+        route = _route_change(previous, state["change_request"], memory, llm, attempts)
         if route.declined:
             return {"route": route, "declined": route.declined}
         return start | {
             "route": route,
-            "trace": [f"change_router: {route.reasoning or 'routed the change'}"],
+            "trace": [*recalled, f"change_router: {route.reasoning or 'routed the change'}"],
         }
 
     return node
@@ -340,19 +475,20 @@ def _build_apply_picks_node():
     def node(state: RevisionState) -> dict:
         route, itinerary = state["route"], state["previous"].itinerary
         change_request = state["change_request"]
-        update: dict = {"trace": []}
+        trace = list(state["trace"])
+        update: dict = {"trace": trace}
 
         if route.outbound is not None:
             pick = itinerary.outbound_options[route.outbound]
             if not _same_flight(pick, state["outbound"]):
                 update["outbound"] = _rebooked(pick, change_request)
-                update["trace"].append(f"flights: outbound rebooked to option {route.outbound}")
+                trace.append(f"flights: outbound rebooked to option {route.outbound}")
 
         if route.return_leg is not None:
             pick = itinerary.return_options[route.return_leg]
             if not _same_flight(pick, state["return_flight"]):
                 update["return_flight"] = _rebooked(pick, change_request)
-                update["trace"].append(f"flights: return rebooked to option {route.return_leg}")
+                trace.append(f"flights: return rebooked to option {route.return_leg}")
 
         # The first lodging option is the selected one everywhere (the
         # itinerary node's cost, the page's "Selected" tag), so switching
@@ -361,7 +497,7 @@ def _build_apply_picks_node():
             lodging = list(state["lodging"])
             lodging.insert(0, lodging.pop(route.hotel))
             update["lodging"] = lodging
-            update["trace"].append(f"hotel: switched to {lodging[0].name}")
+            trace.append(f"hotel: switched to {lodging[0].name}")
         return update
 
     return node
@@ -373,25 +509,26 @@ def _build_revise_days_node(llm: LLM, attempts: int):
         previous = state["previous"]
         try:
             days, notes = _revise_days(
-                previous.itinerary, previous.request, state["route"].itinerary, llm, attempts
+                previous.itinerary,
+                previous.request,
+                state["route"].itinerary,
+                llm,
+                attempts,
+                recalled=_recall_for_days(state.get("memory", [])),
             )
         except RevisionDeclined as exc:
             return {"declined": str(exc)}
-        return {"days": days, "notes": notes, "trace": ["reviser: re-planned the days"]}
+        return {
+            "days": days,
+            "notes": notes,
+            "trace": [*state["trace"], "reviser: re-planned the days"],
+        }
 
     return node
 
 
 def _build_package_revision_node(llm: LLM):
     def node(state: RevisionState) -> dict:
-        if len(state["trace"]) == 1:
-            # Routed, but everything it pointed at was already the case —
-            # e.g. "book the cheapest flight" when the cheapest is booked.
-            return {
-                "declined": state["route"].reasoning
-                or "the plan already matches what was asked for."
-            }
-
         previous = state["previous"]
         itinerary = previous.itinerary
         outbound, return_flight = state["outbound"], state["return_flight"]
@@ -422,6 +559,13 @@ def _build_package_revision_node(llm: LLM):
             total_estimated_cost=flight_cost + hotel_cost + activity_cost,
             notes=state["notes"],
         )
+        if not _what_changed(itinerary, revised)[0]:
+            # Routed, but everything it pointed at was already the case —
+            # e.g. "book the cheapest flight" when the cheapest is booked.
+            return {
+                "declined": state["route"].reasoning
+                or "the plan already matches what was asked for."
+            }
 
         status("summary", "Writing the trip summary…")
         summary = llm.complete(
@@ -430,7 +574,7 @@ def _build_package_revision_node(llm: LLM):
         )
         trace = [*state["trace"], "final_response_agent: rewrote the trip summary"]
         return {
-            "trace": ["final_response_agent: rewrote the trip summary"],
+            "trace": trace,
             "trip": PlannedTrip(
                 id=uuid.uuid4().hex[:12],
                 thread_id=previous.thread_id,
@@ -446,9 +590,26 @@ def _build_package_revision_node(llm: LLM):
     return node
 
 
-def _end_if_declined(next_step: str):
+def _remember_node(state: RevisionState) -> dict:
+    """Write this change into the agent's memory, made or not."""
+    trip = state.get("trip")
+    if state.get("declined") or trip is None:
+        turn = EditTurn(request=state["change_request"], applied=False)
+    else:
+        changes, days_before = _what_changed(state["previous"].itinerary, trip.itinerary)
+        turn = EditTurn(
+            request=state["change_request"],
+            applied=True,
+            version=trip.version,
+            changes=changes,
+            days_before=days_before,
+        )
+    return {"memory": [turn]}
+
+
+def _unless_declined(next_step: str):
     def choose(state: RevisionState) -> str:
-        return END if state.get("declined") else next_step
+        return "remember" if state.get("declined") else next_step
 
     return choose
 
@@ -457,25 +618,36 @@ def _after_picks(state: RevisionState) -> str:
     return "revise_days" if state["route"].itinerary else "package_revision"
 
 
-def build_revision_graph(llm: LLM, attempts: int) -> CompiledStateGraph:
+def build_revision_graph(
+    llm: LLM, attempts: int, checkpointer: BaseCheckpointSaver | None = None
+) -> CompiledStateGraph:
     graph = StateGraph(RevisionState)
     graph.add_node("route_change", _build_route_change_node(llm, attempts))
     graph.add_node("apply_picks", _build_apply_picks_node())
     graph.add_node("revise_days", _build_revise_days_node(llm, attempts))
     graph.add_node("package_revision", _build_package_revision_node(llm))
+    graph.add_node("remember", _remember_node)
 
     graph.add_edge(START, "route_change")
     graph.add_conditional_edges(
-        "route_change", _end_if_declined("apply_picks"), ["apply_picks", END]
+        "route_change", _unless_declined("apply_picks"), ["apply_picks", "remember"]
     )
     graph.add_conditional_edges(
         "apply_picks", _after_picks, ["revise_days", "package_revision"]
     )
     graph.add_conditional_edges(
-        "revise_days", _end_if_declined("package_revision"), ["package_revision", END]
+        "revise_days", _unless_declined("package_revision"), ["package_revision", "remember"]
     )
-    graph.add_edge("package_revision", END)
-    return graph.compile()
+    graph.add_edge("package_revision", "remember")
+    graph.add_edge("remember", END)
+    return graph.compile(checkpointer=checkpointer)
+
+
+def _memory_of(thread_id: str) -> dict:
+    """The checkpoint thread holding the revision agent's memory of a trip.
+    Prefixed, so a graph checkpointed under the same trip later can't land
+    in this one's state."""
+    return {"configurable": {"thread_id": f"revision:{thread_id}"}}
 
 
 def revise_trip(
@@ -484,22 +656,33 @@ def revise_trip(
     *,
     llm: LLM | None = None,
     settings: Settings | None = None,
+    checkpointer: BaseCheckpointSaver | None = None,
 ) -> PlannedTrip:
     """Produce the next version of `previous` with `change_request` applied,
     by running the revision graph.
 
-    Pure in the sense that matters: it reads `previous` and returns a new
-    `PlannedTrip`, and never touches the store — the caller decides whether
-    to keep the result. Raises `RevisionDeclined` when nothing the change
-    asked for could be applied; a change is applied whole or not at all.
+    It never touches the trip store: it reads `previous` and returns a new
+    `PlannedTrip`, and the caller decides whether to keep it. What it does
+    keep is its own memory of the change, made or declined, in the
+    checkpointer (by default the app's, app/agent/memory.py). Raises
+    `RevisionDeclined` when nothing the change asked for could be applied; a
+    change is applied whole or not at all.
     """
     settings = settings or get_settings()
     llm = llm or _build_llm(settings)
-    graph = build_revision_graph(llm, settings.max_itinerary_retries + 1)
-
-    result = graph.invoke(
-        {"previous": previous, "change_request": change_request, "trace": [], "declined": None}
+    graph = build_revision_graph(
+        llm, settings.max_itinerary_retries + 1, checkpointer or get_checkpointer()
     )
+
+    result = graph.invoke(_new_change(previous, change_request), _memory_of(previous.thread_id))
     if result.get("declined"):
         raise RevisionDeclined(result["declined"])
     return result["trip"]
+
+
+def remembered_changes(
+    thread_id: str, checkpointer: BaseCheckpointSaver | None = None
+) -> list[EditTurn]:
+    """What the revision agent remembers about a trip, oldest first."""
+    graph = build_revision_graph(None, 1, checkpointer or get_checkpointer())
+    return graph.get_state(_memory_of(thread_id)).values.get("memory", [])

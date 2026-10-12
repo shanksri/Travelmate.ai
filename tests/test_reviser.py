@@ -13,7 +13,14 @@ from app.agent.prompts import (
     REVISE_ITINERARY_SYSTEM,
     ROUTE_CHANGE_SYSTEM,
 )
-from app.agent.reviser import DECLINE_PREFIX, RevisionDeclined, RevisionError, revise_trip
+from app.agent.reviser import (
+    DECLINE_PREFIX,
+    MEMORY_TURNS,
+    RevisionDeclined,
+    RevisionError,
+    remembered_changes,
+    revise_trip,
+)
 from app.core.config import Settings
 from app.models.itinerary import DayPlan, FlightLeg, LodgingOption
 
@@ -590,3 +597,154 @@ def test_the_router_prompt_says_a_missing_hotel_never_blocks_a_day_change():
     flat = " ".join(ROUTE_CHANGE_SYSTEM.split())  # the prompt wraps mid-sentence
     assert "their absence is never a reason to decline it" in flat
     assert "only when the request itself asks to change one" in flat
+
+
+# --- the agent's memory of earlier changes -----------------------------------
+
+
+def _revise_call(llm: FakeLLM) -> dict:
+    return next(c for c in llm.calls if c["system"] == REVISE_ITINERARY_SYSTEM)
+
+
+def first_change(planned, trip_request, settings):
+    return revise_trip(
+        planned, "more on day 1", llm=revising_llm(trip_request), settings=settings
+    )
+
+
+def undo_llm(trip_request) -> FakeLLM:
+    """Puts the `planned` fixture's days back, as "undo that" should."""
+    return FakeLLM(
+        by_system={
+            ROUTE_CHANGE_SYSTEM: [route_to_days("undo that")],
+            REVISE_ITINERARY_SYSTEM: [json.dumps(draft_itinerary_payload(trip_request))],
+            FINAL_RESPONSE_AGENT_SYSTEM: ["Back as it was."],
+        }
+    )
+
+
+def test_a_first_change_has_nothing_to_recall(planned, trip_request, settings):
+    llm = revising_llm(trip_request)
+
+    revised = revise_trip(planned, "more on day 1", llm=llm, settings=settings)
+
+    assert "earlier_changes" not in json.loads(llm.calls[0]["user"])
+    assert "Earlier changes" not in _revise_call(llm)["user"]
+    assert not any(line.startswith("memory:") for line in revised.agent_trace)
+
+
+def test_the_next_change_to_the_same_trip_recalls_the_last(planned, trip_request, settings):
+    second = first_change(planned, trip_request, settings)
+    llm = undo_llm(trip_request)
+
+    third = revise_trip(second, "undo that", llm=llm, settings=settings)
+
+    sent = json.loads(llm.calls[0]["user"])
+    assert sent["earlier_changes"] == [
+        '"more on day 1": made (version 2). Day 1: "Day 1" became "Day 1 (revised)"'
+    ]
+    prompt = _revise_call(llm)["user"]
+    assert "Earlier changes to this trip, oldest first:\n1. \"more on day 1\"" in prompt
+    assert "memory: recalled 1 earlier change(s) to this trip" in third.agent_trace
+    assert third.itinerary.days == planned.itinerary.days
+
+
+def test_undo_is_shown_the_days_the_change_replaced(planned, trip_request, settings):
+    second = first_change(planned, trip_request, settings)
+    llm = undo_llm(trip_request)
+
+    revise_trip(second, "undo that", llm=llm, settings=settings)
+
+    prompt = _revise_call(llm)["user"]
+    marker = 'The days "more on day 1" replaced, exactly as they were before it: '
+    replaced = prompt.split(marker)[1]
+    days = json.loads(replaced.split("\n\n")[0])
+    assert [DayPlan(**day) for day in days] == planned.itinerary.days[:1]
+
+
+def test_what_each_change_did_is_remembered(with_options, trip_request, settings):
+    hotel = FakeLLM(
+        by_system={ROUTE_CHANGE_SYSTEM: [route(hotel=1)], FINAL_RESPONSE_AGENT_SYSTEM: ["S."]}
+    )
+    second = revise_trip(with_options, "somewhere fancier", llm=hotel, settings=settings)
+    flight = FakeLLM(
+        by_system={ROUTE_CHANGE_SYSTEM: [route(outbound=1)], FINAL_RESPONSE_AGENT_SYSTEM: ["S."]}
+    )
+    revise_trip(second, "nonstop outbound", llm=flight, settings=settings)
+
+    turns = remembered_changes(with_options.thread_id)
+
+    assert [(t.request, t.applied, t.version) for t in turns] == [
+        ("somewhere fancier", True, 2),
+        ("nonstop outbound", True, 3),
+    ]
+    assert turns[0].changes == ["Hotel: Casa Vista Hostel became Palacio Grande"]
+    assert turns[1].changes == [
+        f"Outbound flight: Budget Air at {trip_request.start_date.isoformat()} "
+        f"became Direct Jet at {trip_request.start_date.isoformat()}"
+    ]
+    assert turns[0].days_before == [] and turns[1].days_before == []
+
+
+def test_a_declined_change_is_remembered_without_its_reason(planned, trip_request, settings):
+    """The reason anchored the model into refusing again (see
+    test_earlier_notes_are_not_shown_to_the_model)."""
+    with pytest.raises(RevisionDeclined):
+        revise_trip(
+            planned,
+            "add rameshwaram",
+            llm=unchanged_llm(trip_request, ["Couldn't apply: Rameshwaram is too far."]),
+            settings=settings,
+        )
+    llm = revising_llm(trip_request)
+
+    revise_trip(planned, "please add rameshwaram", llm=llm, settings=settings)
+
+    assert json.loads(llm.calls[0]["user"])["earlier_changes"] == ['"add rameshwaram": not made']
+    assert "too far" not in _revise_call(llm)["user"]
+    assert [t.applied for t in remembered_changes(planned.thread_id)] == [False, True]
+
+
+def test_each_trip_has_its_own_memory(planned, trip_request, settings):
+    revise_trip(planned, "more on day 1", llm=revising_llm(trip_request), settings=settings)
+    other = planned.model_copy(update={"id": "w1", "thread_id": "w1"})
+    llm = revising_llm(trip_request)
+
+    revise_trip(other, "more on day 1", llm=llm, settings=settings)
+
+    assert "earlier_changes" not in json.loads(llm.calls[0]["user"])
+    assert len(remembered_changes("w1")) == 1
+
+
+def test_only_the_latest_changes_are_remembered(planned, trip_request, settings):
+    trip = planned
+    for n in range(MEMORY_TURNS + 2):
+        trip = revise_trip(
+            trip, f"change {n}", llm=revising_llm(trip_request, tag=f"v{n}"), settings=settings
+        )
+
+    turns = remembered_changes(planned.thread_id)
+
+    assert len(turns) == MEMORY_TURNS
+    assert turns[0].request == "change 2" and turns[-1].request == f"change {MEMORY_TURNS + 1}"
+
+
+def test_nothing_but_the_memory_carries_over_between_changes(planned, trip_request, settings):
+    second = first_change(planned, trip_request, settings)
+
+    third = revise_trip(second, "undo that", llm=undo_llm(trip_request), settings=settings)
+
+    assert third.agent_trace == [
+        "memory: recalled 1 earlier change(s) to this trip",
+        "change_router: test routing",
+        "reviser: re-planned the days",
+        "final_response_agent: rewrote the trip summary",
+    ]
+
+
+def test_the_prompts_say_what_the_memory_is_for():
+    revise = " ".join(REVISE_ITINERARY_SYSTEM.split())
+    router = " ".join(ROUTE_CHANGE_SYSTEM.split())
+    assert "put back the days it replaced exactly as recorded" in revise
+    assert "judge every request afresh" in revise
+    assert "pick the option it switched from" in router

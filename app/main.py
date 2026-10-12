@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.agent.memory import close_checkpointer, get_checkpointer
 from app.api.routes import ask, health, jobs, trips
 from app.core.logging import configure_logging
 from app.providers.aviationstack import fetch_flights
@@ -24,10 +25,14 @@ async def lifespan(app: FastAPI):
     # Build the store (and, for SqlTripStore, create its table) at boot
     # rather than on the first request — a bad TRAVELMATE_DATABASE_URL should
     # fail the container immediately, not the first trip a user plans.
+    # The same goes for the revision agent's memory (its checkpoint tables).
     get_store()
+    get_checkpointer()
     yield
-    # Close the long-lived MCP sessions (app/providers/mcp_runtime.py).
+    # Close the long-lived MCP sessions (app/providers/mcp_runtime.py) and
+    # the checkpointer's database connections.
     shutdown_mcp_runtime()
+    close_checkpointer()
 
 
 app = FastAPI(

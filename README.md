@@ -31,8 +31,23 @@ Every request runs as a LangGraph graph (`app/agent/graph.py`,
 
 `POST /trips/plan` and the CLI run the trip steps alone (resolve_destination
 … package_trip). Revisions are a graph too: route_change → apply_picks →
-revise_days (only when the days change) → package_revision, with any step
-able to end it with a reason.
+revise_days (only when the days change) → package_revision → remember, with
+any step able to end it with a reason.
+
+**Memory.** Each agent that iterates keeps its own short-term memory, private
+to it, rather than one shared state:
+
+- **The revision agent** remembers the trip's last 6 changes: what was asked,
+  whether it was made, what it changed, and the days it replaced. A LangGraph
+  checkpointer keeps it between requests, in Postgres
+  (`app/agent/memory.py`), so "undo that" or "go back to the other hotel"
+  works.
+- **The itinerary agent** is a small subgraph (write_days → check_days →
+  again) whose memory is why each attempt was rejected. Every retry sees all
+  the reasons. It lasts only while the trip is being written.
+
+The ask graph isn't checkpointed: its state holds Google Maps results, which
+can't be stored.
 
 **Streaming.** The page starts a job (`POST /jobs`) and gets its id at once,
 then listens to `GET /jobs/{id}/events` (Server-Sent Events). The job runs
@@ -229,6 +244,20 @@ about, then only those are touched:
 Destination and dates never change. The total cost is recomputed from
 whatever is booked afterwards.
 
+**The revision agent remembers earlier changes to the same trip**, so a
+change can refer to one before it: "undo that", "put Rameshwaram back", "go
+back to the previous hotel". After each change, made or not, a `remember`
+step records it in the graph's `memory` channel: what was asked for, what it
+changed in words, and the days it replaced exactly as they were. A LangGraph
+checkpointer (`PostgresSaver`, or `InMemorySaver` with
+`TRAVELMATE_STORE=memory`) saves that channel under `revision:<thread_id>`
+and restores it on the trip's next change. Every other channel starts fresh,
+and only the last 6 changes are kept. A declined change is remembered
+without its reason: a refusal fed back to the model makes it refuse again.
+Verified live: "add a day trip to Rameshwaram", then "undo that", restored
+all 5 days of the original exactly; "put Rameshwaram back" then restored
+version 2 exactly.
+
 Verified end-to-end on a real 4-day Kyoto trip: "more activities on day 3"
 took day 3 from 2 to 3 activities, left days 1, 2 and 4 byte-for-byte
 identical, and moved the total from ₹2,953.69 to ₹3,003.69. A follow-up
@@ -247,7 +276,8 @@ loop for a tea house while leaving the newly added day-3 activity in place.
 | `app/agent/itinerary_json.py` | Parses and Pydantic-validates the itinerary agent's JSON |
 | `app/agent/prompt_parser.py` | Turns one free-text sentence into a `TripRequest` — what powers the frontend's single prompt box |
 | `app/agent/planner.py` | `plan_trip()` / `plan_trip_from_prompt()` — build the graph, invoke it, map the result to a `PlannedTrip` |
-| `app/agent/reviser.py` | `revise_trip()` — routes one requested change to the flights, hotel and/or day plan of an existing trip, and applies only those |
+| `app/agent/reviser.py` | `revise_trip()` — routes one requested change to the flights, hotel and/or day plan of an existing trip, and applies only those; remembers earlier changes to the trip |
+| `app/agent/memory.py` | `get_checkpointer()` — where LangGraph keeps the revision agent's memory between requests (Postgres, or in process for tests) |
 | `app/agent/assistant.py` | `answer_prompt()` — behind `POST /ask`: plans a trip, or answers a places or route request from Google Maps |
 | `app/providers/google_maps.py` | MCP client to Google's Maps Grounding Lite: `search_places`, `compute_route` |
 | `app/providers/` | The travel data seam (`TravelProvider` Protocol) |

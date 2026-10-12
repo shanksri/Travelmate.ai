@@ -1,3 +1,5 @@
+import json
+
 from conftest import FakeLLM, draft_itinerary_json, draft_itinerary_payload
 
 from app.agent.nodes import (
@@ -412,3 +414,41 @@ def test_both_are_searched_by_default(provider, trip_request):
     """Every caller that predates the checkboxes keeps the full plan."""
     assert trip_request.include_flights is True
     assert trip_request.include_hotels is True
+
+
+def test_each_retry_is_told_every_earlier_rejection(provider, trip_request):
+    """The itinerary agent's memory: attempt 3 hears why 1 and 2 failed,
+    not only 2, so fixing one mistake can't bring back the other."""
+    one_day = draft_itinerary_payload(trip_request)
+    one_day["days"] = one_day["days"][:1]
+    llm = FakeLLM(
+        responses=["not json at all", json.dumps(one_day), draft_itinerary_json(trip_request)]
+    )
+    node = build_itinerary_node(provider, llm, max_retries=2)
+    state = initial_state(trip_request) | {
+        "resolved_destination": "Lisbon, Portugal",
+        "flight_results": {},
+        "hotel_results": {},
+    }
+
+    result = node(state)
+
+    assert "attempt 3" in result["messages"][0]
+    third = llm.calls[2]["user"]
+    assert "Your earlier attempts were rejected, for these reasons:\n1. " in third
+    assert "1. Your last response was not valid JSON" in third
+    assert "\n2. `days` must have exactly one entry for each of these" in third
+
+
+def test_the_itinerary_agents_memory_stays_inside_it(provider, trip_request):
+    llm = FakeLLM(responses=["not json at all", draft_itinerary_json(trip_request)])
+    node = build_itinerary_node(provider, llm, max_retries=2)
+    state = initial_state(trip_request) | {
+        "resolved_destination": "Lisbon, Portugal",
+        "flight_results": {},
+        "hotel_results": {},
+    }
+
+    result = node(state)
+
+    assert set(result) == {"itinerary", "messages"}

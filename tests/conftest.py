@@ -121,6 +121,18 @@ def _fresh_flight_cache():
 
 
 @pytest.fixture(autouse=True)
+def _fresh_agent_memory():
+    """The checkpointer holding the revision agent's memory is a process-wide
+    singleton too: without this, one test's changes to trip "v1" would be
+    remembered when the next test revises its own trip "v1"."""
+    from app.agent.memory import get_checkpointer
+
+    get_checkpointer.cache_clear()
+    yield
+    get_checkpointer.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _instant_retries_and_closed_breakers(monkeypatch):
     """Live sources retry with real waits (1 s, then 3 s) and keep a
     process-wide circuit breaker. Tests don't wait, and each starts with the
