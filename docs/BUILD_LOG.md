@@ -1163,6 +1163,98 @@ Postgres checkpointer):
 Planning still streamed each day (first at 7.3 s). The memory read back
 from Postgres listed all three changes.
 
+
+---
+
+## Phase 13 — Routes before searches
+
+### Step 46 · Route first, hotels per town, a step list on the page (`af369b5`, 2026-10-12)
+
+**Found live:** "10 day itinerary for Kerala and Tamil Nadu from Varanasi",
+with Flights and Hotels ticked, came back with no flights and with hostels.
+Both had one cause: flights and hotels were searched for the destination
+exactly as typed, before any town was chosen.
+
+- **Flights:** "Kerala and Tamil Nadu" isn't an airport, so neither leg was
+  searched ("couldn't match 'Kerala and Tamil Nadu' to an airport"). Any trip
+  across two regions had no flights since Step 31 kept such destinations
+  together.
+- **Hotels:** one search for two whole states, then the 5 cheapest rated
+  3.5+. That gave a student stay at ₹258 a night, hostels in Munnar and
+  Kodaikanal (neither on the route), and a homestay room. They were real,
+  live Google results, and they looked fake.
+- **Also found:** the itinerary prompt still carried sample attractions
+  ("Kerala and Tamil Nadu guided history tour") and sample weather (10 °C
+  and "hot and sunny" for Kerala in October). The flight agent's LLM call
+  ran even with no flights to explain, and the hotel agent's LLM
+  explanation was never read by anything.
+
+**What changed:**
+
+- **`plan_route` step** (`app/agent/route_plan.py`, gpt-4o via the new
+  `TRAVELMATE_ROUTE_MODEL`) runs before any search. It decides the towns
+  slept in, the nights in each (at most 4 towns), and the airports to fly
+  into and out of. Code checks the answer and retries with the reason:
+  - the nights must add up to the trip's;
+  - at most 4 stops;
+  - each airport must exist in the airport list (`has_airport` on the
+    provider); "Trivandrum" doesn't, "Thiruvananthapuram" does.
+
+  If it never comes right, the trip falls back to one stop, as before. A
+  0-night trip skips the call.
+- **Flights** search the route's first and last airports.
+- **Hotels: one search per town**, for that town's dates, all at once.
+  `Itinerary.stays` (a `HotelStay` per town, each with its own options and
+  source) replaces the single `lodging_options` list. Saved trips still
+  load: their list becomes one stay for every night.
+- **Hotel quality:** hotels of 3 stars or more, asked of Google
+  (`hotel_class`, `rating`, `sort_by`=price) and checked again in code. Also
+  dropped: holiday rentals, anything named a hostel or homestay, and ratings
+  from fewer than 50 reviews. The cache key went to `v2`, so no unfiltered
+  search is reused.
+- **The itinerary agent** gets the route, the town for every date, the
+  booked flight times, and each town's hotel. It no longer gets the sample
+  attractions or weather, and it no longer decides the route itself.
+- **No wasted calls:** no flight explanation when there are no flights; the
+  hotel agent makes no LLM call at all.
+- **Revisions:** the router sees one hotel list per town and answers with
+  `hotels: [{stay, option}]`, so "a better rated hotel in Kochi" changes only
+  Kochi's. The memory records "Hotel in Kochi: A became B".
+- **The page shows each step.** Every step reports itself starting and
+  finishing (`status` events with a state: active, done, skipped, warn).
+  The page draws a step list with a running timer, in place of a single
+  "Planning…" line:
+  - Understanding your request;
+  - Choosing the cities and nights;
+  - Searching flights;
+  - Searching hotels;
+  - Writing the day-by-day plan ("Day 4 of 10 written");
+  - Writing the trip summary;
+  - Finding places to eat.
+
+  Each step carries a one-line detail, e.g. "Kochi 4 nights → Madurai 3 →
+  Thiruvananthapuram 2". The plan shows a route line and a hotel block per
+  town.
+
+**Bug found while verifying:** with the star filter on, Google still filed
+"The Hosteller Fort Kochi" (₹565 a night, a dorm bed), "Juliet's Homestay"
+and "Calvin's Inn Home Stay" as 3-star hotels. That led to the name and
+review-count filters above, checked against the saved search results without
+spending a search.
+
+**Measured live** (the same request, through the page):
+
+| | Before | After |
+|---|---|---|
+| Route | decided inside the day plan | Kochi 4 → Madurai 3 → Thiruvananthapuram 2 |
+| Flights | none: "couldn't match … to an airport" | VNS → COK 26 Oct 15:40, ₹10,570; TRV → VNS 4 Nov 08:55, ₹18,652 (11 options each way) |
+| Hotels | 5 for "Kerala and Tamil Nadu", hostels and a homestay | 5 per town, e.g. Hala Residency, Kochi, ₹781/night |
+| Searches | 2 flight attempts that never ran, 1 hotel | 2 flight, 3 hotel |
+| Time | | 54 s live; 36 s from cached searches |
+
+Day 1 began at 21:00, after the flight landed. "A better rated hotel in
+Kochi" then switched only Kochi's hotel, in 3.2 s.
+
 ---
 
 ## Where things stand
@@ -1173,10 +1265,10 @@ from Postgres listed all three changes.
 | Persistence | ✅ Postgres, append-only version history per `thread_id`; LangGraph checkpoints for the revision agent's memory |
 | Revisions | ✅ "Change this plan" box, routed to flights, hotel and/or days; refused whole with a reason when any part cannot be done; remembers the trip's last 6 changes ("undo that" works); `gpt-4o` |
 | Frontend | ✅ Dark theme, free-text prompt, rupee rendering, cheapest/fastest flight table per leg, Flights/Hotels/Restaurants checkboxes, optional date pickers, revise box — no history browser |
-| Travel data | ✅ **Flights and hotels are real** under `TRAVELMATE_PROVIDER=live` (Google Flights and Google Hotels via SerpApi, two accounts, 250 searches/month each), each through a retry and fallback chain and labelled with where it came from. Attractions and weather are still sample data. `.env` is on `live` |
+| Travel data | ✅ **Flights and hotels are real** under `TRAVELMATE_PROVIDER=live` (Google Flights and Google Hotels via SerpApi, two accounts, 250 searches/month each), each through a retry and fallback chain and labelled with where it came from. A route step picks the towns and airports first; hotels are searched per town, 3★ and up, no hostels. Attractions and weather have no real source and are no longer used. `.env` is on `live` |
 | MCP | ✅ Three clients (SerpApi — flights; Google Maps Grounding Lite — places and routes; Tavily — standalone), two servers (AviationStack — now keyless, weather) |
 | Currency | ✅ Rupee-native, with legacy USD trips preserved |
-| Tests | ✅ 364 passing in Docker, `ruff` clean |
+| Tests | ✅ 381 passing in Docker, `ruff` clean |
 | GitHub | ✅ Pushed to `shanksri/Travelmate.ai` (public) over SSH |
 | Running it | Docker (`docker compose up -d api`; tests with `docker compose run --rm tests`). Windows Smart App Control blocks the local `.venv` |
 
@@ -1224,8 +1316,7 @@ browser id first, and move to an account if login comes later.
   inside the existing parser call. Deferred by the user.
 - **Budget check.** Compare the estimated total with the stated budget in
   code, not with an LLM agent. Deferred by the user.
-- ~~Real hotel data~~: done in Step 42. Next for hotels: one search per city
-  on multi-city trips.
+- ~~Real hotel data~~: done in Step 42; one search per town in Step 46.
 - **Real weather in the itinerary.** Use the existing weather client or MCP
   server instead of sample weather. Forecasts only reach about two weeks
   ahead; later trips would use typical weather.
@@ -1240,6 +1331,10 @@ browser id first, and move to an account if login comes later.
   if revision latency matters.
 
 ### Known limits carried forward
+
+- A revision that moves nights between towns ("one more day in Kochi")
+  re-plans the days but keeps the hotels as booked, since revisions never
+  search again (Step 46).
 
 - `gpt-4o-mini` turns "suggest me a beach trip" into destination "a beach"
   (Step 31).
