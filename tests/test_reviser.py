@@ -22,7 +22,7 @@ from app.agent.reviser import (
     revise_trip,
 )
 from app.core.config import Settings
-from app.models.itinerary import DayPlan, FlightLeg, LodgingOption
+from app.models.itinerary import DayPlan, FlightLeg, HotelStay, LodgingOption
 
 
 @pytest.fixture
@@ -50,15 +50,26 @@ def planned(trip_request):
         depart_date=trip_request.end_date,
         total=38_000.0,
     )
-    trip.itinerary.lodging_options = [
-        LodgingOption(name="Casa Vista Hostel", nightly=8_000.0, total=24_000.0)
+    trip.itinerary.stays = [
+        HotelStay(
+            city="Lisbon",
+            check_in=trip_request.start_date,
+            nights=trip_request.nights,
+            options=[LodgingOption(name="Casa Vista Hostel", nightly=8_000.0, total=24_000.0)],
+        )
     ]
     return trip
 
 
+def stay(it) -> HotelStay:
+    """The one stay these single-town trips have."""
+    (only,) = it.stays
+    return only
+
+
 def route(**fields) -> str:
     """A ROUTE_CHANGE_SYSTEM answer; anything not given is null."""
-    answer = {"outbound": None, "return": None, "hotel": None, "itinerary": None,
+    answer = {"outbound": None, "return": None, "hotels": [], "itinerary": None,
               "declined": None, "reasoning": "test routing"}
     return json.dumps(answer | fields)
 
@@ -121,7 +132,7 @@ def test_flights_and_lodging_carry_over_untouched(planned, trip_request, setting
 
     assert revised.itinerary.outbound_flight == planned.itinerary.outbound_flight
     assert revised.itinerary.return_flight == planned.itinerary.return_flight
-    assert revised.itinerary.lodging_options == planned.itinerary.lodging_options
+    assert revised.itinerary.stays == planned.itinerary.stays
 
 
 def test_the_model_is_never_shown_the_flights_or_hotel(planned, trip_request, settings):
@@ -344,7 +355,7 @@ def with_options(planned, trip_request):
     ]
     it.outbound_flight = it.outbound_options[0].model_copy(update={"rationale": "cheapest"})
     it.return_flight = it.return_options[0]
-    it.lodging_options = [
+    stay(it).options = [
         LodgingOption(name="Casa Vista Hostel", nightly=8_000.0, total=24_000.0),
         LodgingOption(name="Palacio Grande", nightly=20_000.0, total=60_000.0),
     ]
@@ -401,14 +412,14 @@ def test_a_rebooked_flight_is_reflected_in_the_total(with_options, settings):
 def test_a_hotel_change_moves_the_pick_to_the_front(with_options, settings):
     llm = FakeLLM(
         by_system={
-            ROUTE_CHANGE_SYSTEM: [route(hotel=1)],
+            ROUTE_CHANGE_SYSTEM: [route(hotels=[{"stay": 0, "option": 1}])],
             FINAL_RESPONSE_AGENT_SYSTEM: ["Summary."],
         }
     )
 
     revised = revise_trip(with_options, "somewhere fancier", llm=llm, settings=settings)
 
-    names = [h.name for h in revised.itinerary.lodging_options]
+    names = [h.name for h in stay(revised.itinerary).options]
     assert names == ["Palacio Grande", "Casa Vista Hostel"]
     activities = 2_000 * len(revised.itinerary.days)
     assert revised.itinerary.total_estimated_cost == 30_000 + 28_000 + 60_000 + activities
@@ -419,7 +430,9 @@ def test_one_change_can_touch_flights_hotel_and_days_together(
 ):
     llm = FakeLLM(
         by_system={
-            ROUTE_CHANGE_SYSTEM: [route(outbound=1, hotel=1, itinerary="more on day 2")],
+            ROUTE_CHANGE_SYSTEM: [
+                route(outbound=1, hotels=[{"stay": 0, "option": 1}], itinerary="more on day 2")
+            ],
             REVISE_ITINERARY_SYSTEM: [json.dumps(changed_payload(trip_request))],
             FINAL_RESPONSE_AGENT_SYSTEM: ["Summary."],
         }
@@ -430,7 +443,7 @@ def test_one_change_can_touch_flights_hotel_and_days_together(
     )
 
     assert revised.itinerary.outbound_flight.carrier == "Direct Jet"
-    assert revised.itinerary.lodging_options[0].name == "Palacio Grande"
+    assert stay(revised.itinerary).booked.name == "Palacio Grande"
     assert revised.itinerary.days[0].summary == "Day 1 (revised)"
     revise_call = next(c for c in llm.calls if c["system"] == REVISE_ITINERARY_SYSTEM)
     assert "The traveller asks: more on day 2" in revise_call["user"]
@@ -448,7 +461,9 @@ def test_the_router_sees_the_options_with_the_booked_ones_marked(with_options, s
 
     sent = json.loads(llm.calls[0]["user"])
     assert [o["booked"] for o in sent["outbound_options"]] == [True, False]
-    assert [h["selected"] for h in sent["hotel_options"]] == [True, False]
+    (lisbon,) = sent["hotel_options"]
+    assert lisbon["city"] == "Lisbon" and lisbon["nights"] == 3
+    assert [h["selected"] for h in lisbon["options"]] == [True, False]
     assert sent["change_request"] == "nonstop outbound"
 
 
@@ -467,7 +482,8 @@ def test_picking_what_is_already_booked_is_refused(with_options, settings):
     llm = FakeLLM(
         by_system={
             ROUTE_CHANGE_SYSTEM: [
-                route(outbound=0, hotel=0, reasoning="The cheapest is already booked.")
+                route(outbound=0, hotels=[{"stay": 0, "option": 0}],
+                      reasoning="The cheapest is already booked.")
             ]
         }
     )
@@ -491,7 +507,7 @@ def test_an_index_that_isnt_there_is_retried_with_feedback(with_options, setting
 
 
 def test_a_router_that_never_names_a_real_option_gives_up(with_options, settings):
-    llm = FakeLLM(by_system={ROUTE_CHANGE_SYSTEM: [route(hotel=9)] * 3})
+    llm = FakeLLM(by_system={ROUTE_CHANGE_SYSTEM: [route(hotels=[{"stay": 0, "option": 9}])] * 3})
 
     with pytest.raises(RevisionError, match="couldn't work out"):
         revise_trip(with_options, "different hotel", llm=llm, settings=settings)
@@ -537,7 +553,8 @@ def days_only(planned):
     """A trip planned with Flights and Hotels unticked: nothing to re-pick."""
     it = planned.itinerary
     it.outbound_flight = it.return_flight = None
-    it.outbound_options, it.return_options, it.lodging_options = [], [], []
+    it.outbound_options, it.return_options = [], []
+    stay(it).options = []
     return planned
 
 
@@ -577,7 +594,7 @@ def test_a_flight_request_on_a_days_only_trip_is_declined_by_the_day_planner(
 
 
 def test_a_trip_with_flights_but_no_hotel_still_routes(with_options, settings):
-    with_options.itinerary.lodging_options = []
+    stay(with_options.itinerary).options = []
     llm = FakeLLM(
         by_system={
             ROUTE_CHANGE_SYSTEM: [route(outbound=1)],
@@ -664,7 +681,10 @@ def test_undo_is_shown_the_days_the_change_replaced(planned, trip_request, setti
 
 def test_what_each_change_did_is_remembered(with_options, trip_request, settings):
     hotel = FakeLLM(
-        by_system={ROUTE_CHANGE_SYSTEM: [route(hotel=1)], FINAL_RESPONSE_AGENT_SYSTEM: ["S."]}
+        by_system={
+            ROUTE_CHANGE_SYSTEM: [route(hotels=[{"stay": 0, "option": 1}])],
+            FINAL_RESPONSE_AGENT_SYSTEM: ["S."],
+        }
     )
     second = revise_trip(with_options, "somewhere fancier", llm=hotel, settings=settings)
     flight = FakeLLM(
@@ -678,7 +698,7 @@ def test_what_each_change_did_is_remembered(with_options, trip_request, settings
         ("somewhere fancier", True, 2),
         ("nonstop outbound", True, 3),
     ]
-    assert turns[0].changes == ["Hotel: Casa Vista Hostel became Palacio Grande"]
+    assert turns[0].changes == ["Hotel in Lisbon: Casa Vista Hostel became Palacio Grande"]
     assert turns[1].changes == [
         f"Outbound flight: Budget Air at {trip_request.start_date.isoformat()} "
         f"became Direct Jet at {trip_request.start_date.isoformat()}"

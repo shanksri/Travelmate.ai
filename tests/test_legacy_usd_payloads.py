@@ -58,7 +58,14 @@ def test_legacy_amounts_are_not_reinterpreted_as_rupees():
     trip = PlannedTrip.model_validate(LEGACY_TRIP)
 
     assert trip.itinerary.outbound_flight.total == 500.0
-    assert trip.itinerary.lodging_options[0].nightly == 100.0
+    # The one hotel list of a trip before routes is one stay for every night.
+    (stay,) = trip.itinerary.stays
+    assert stay.options[0].nightly == 100.0
+    assert (stay.city, stay.check_in, stay.nights) == (
+        trip.itinerary.destination,
+        trip.itinerary.start_date,
+        (trip.itinerary.end_date - trip.itinerary.start_date).days,
+    )
     assert trip.itinerary.days[0].activities[0].estimated_cost == 20.0
     assert trip.request.budget == 3000
 

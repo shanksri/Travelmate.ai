@@ -49,7 +49,9 @@ def plan_trip(
     provider = provider or get_provider()
     llm = llm or _build_llm(settings)
 
-    graph = build_planner_graph(provider, llm, settings.max_itinerary_retries)
+    graph = build_planner_graph(
+        provider, llm, settings.max_itinerary_retries, settings.route_model
+    )
     return graph.invoke(initial_state(request))["trip"]
 
 

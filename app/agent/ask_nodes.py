@@ -11,7 +11,7 @@ from app.agent.events import emit, status
 from app.agent.llm import LLM
 from app.agent.prompt_parser import apply_page_choices, interpret_prompt
 from app.agent.state import AskState
-from app.models.itinerary import PlannedTrip
+from app.models.itinerary import PlannedTrip, TripRequest
 from app.models.maps import CityPlaces
 from app.providers import google_maps
 
@@ -27,6 +27,7 @@ def build_interpret_node(llm: LLM):
         status("interpret", "Reading your request…")
         interpretation = interpret_prompt(state["prompt"], llm)
         emit({"type": "intent", "kind": interpretation.intent})
+        status("interpret", _understood(interpretation), state="done")
         return {
             "intent": interpretation.intent,
             "parsed": interpretation.parsed,
@@ -37,6 +38,27 @@ def build_interpret_node(llm: LLM):
     return node
 
 
+def _understood(interpretation) -> str:
+    """What the request was read as, in one line for the page."""
+    parsed = interpretation.parsed
+    if interpretation.intent == "places":
+        return f"Places: {parsed.places_query}"
+    if interpretation.intent == "route":
+        return f"Route: {parsed.origin} → {parsed.destination}"
+    trip = interpretation.trip
+    if trip is None or not trip.destination:
+        return "A trip, but no destination was named"
+    return _trip_line(trip)
+
+
+def _trip_line(trip: TripRequest) -> str:
+    origin = f" from {trip.origin}" if trip.origin else ""
+    return (
+        f"A trip to {trip.destination}{origin}, {trip.start_date:%d %b} to "
+        f"{trip.end_date:%d %b} ({trip.nights} nights)"
+    )
+
+
 def next_after_interpret(state: AskState) -> str:
     return {"places": "places", "route": "route"}.get(state["intent"], "prepare_trip")
 
@@ -45,7 +67,9 @@ def build_places_node():
     def node(state: AskState) -> dict:
         query = state["parsed"].places_query
         status("places", f"Searching Google Maps for {query}…")
-        return {"places": google_maps.search_places(query)}
+        places = google_maps.search_places(query)
+        status("places", "Found", state="done")
+        return {"places": places}
 
     return node
 
@@ -57,6 +81,7 @@ def build_route_node():
         route = google_maps.compute_route(
             parsed.origin, parsed.destination, parsed.travel_mode or "DRIVE"
         )
+        status("route", "Found", state="done")
         return {"route": route}
 
     return node
@@ -83,6 +108,8 @@ def build_prepare_trip_node():
             start_date=choices["start_date"],
             end_date=choices["end_date"],
         )
+        # Restated with the page's dates, which replace the sentence's.
+        status("interpret", _trip_line(request), state="done")
         return {"request": request, "resolved_destination": request.destination or ""}
 
     return node
@@ -118,7 +145,7 @@ def build_city_places_node():
 
     def node(payload: dict) -> dict:
         city, kind = payload["city"], payload["kind"]
-        status("city_places", f"Finding {kind} in {city}…")
+        status("restaurants", f"Finding {kind} in {city}…")
         try:
             found = CityPlaces(
                 city=city, places=google_maps.search_places(f"best {kind} in {city}")

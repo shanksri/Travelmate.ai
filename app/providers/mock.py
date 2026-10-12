@@ -78,6 +78,9 @@ class MockTravelProvider:
     ) -> tuple[list[dict[str, Any]], DataSource]:
         return self.search_lodging(destination, check_in, nights, travelers), SAMPLE
 
+    def has_airport(self, city: str) -> bool:
+        return True  # sample flights exist for any name
+
     def search_destinations(
         self, interests: list[str], month: int, budget_level: str
     ) -> list[dict[str, Any]]:

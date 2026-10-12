@@ -16,6 +16,8 @@ def _prop(name, nightly, total, rating, hotel_class="4-star hotel", **extra):
         "type": "hotel",
         "name": name,
         "hotel_class": hotel_class,
+        "extracted_hotel_class": int(hotel_class[0]) if hotel_class else None,
+        "reviews": 500,
         "overall_rating": rating,
         "rate_per_night": {"lowest": f"₹{nightly:,}", "extracted_lowest": nightly},
         "total_rate": {"lowest": f"₹{total:,}", "extracted_lowest": total},
@@ -48,6 +50,47 @@ def test_normalize_keeps_priced_well_rated_hotels_cheapest_first():
     assert nihara["rating"] == 4.4
     assert nihara["nightly"] == 5239.0
     assert nihara["total"] == 15718.0  # Google's total for the stay, as given
+
+
+def test_hostels_homestays_and_two_star_places_are_left_out():
+    """Seen live (Kerala, 2026-10-12): rated 3.5+ and cheapest first, the
+    list was student hostels and homestay rooms. A hostel has no star class."""
+    raw = {
+        "properties": [
+            _prop("Hope Hostels, Munnar", 305, 2741, 4.8, hotel_class=None),
+            _prop("Zostel Ooty", 792, 7128, 4.7, hotel_class="2-star hotel"),
+            _prop("Ladies Homestay", 485, 4361, 5.0, hotel_class=None, type="vacation rental"),
+            _prop("Townhouse Oak Thiruvallam", 1622, 14598, 4.2, hotel_class="3-star hotel"),
+        ]
+    }
+
+    assert [h["name"] for h in normalize_hotels(raw)] == ["Townhouse Oak Thiruvallam"]
+
+
+def test_a_hostel_or_homestay_filed_as_a_three_star_hotel_is_left_out():
+    """Seen live in Kochi with the star filter on: Google files these as
+    3-star hotels; their names, and the price of a dorm bed, say otherwise."""
+    raw = {
+        "properties": [
+            _prop("The Hosteller Fort Kochi, Ocean Edge", 565, 2259, 4.7, "3-star hotel"),
+            _prop("Juliet's Homestay Fort kochi", 709, 2835, 3.9, "3-star hotel"),
+            _prop("Calvin's Inn Home Stay", 883, 3532, 4.6, "3-star hotel"),
+            _prop("Hala Residency", 781, 3124, 4.0, "3-star hotel"),
+        ]
+    }
+
+    assert [h["name"] for h in normalize_hotels(raw)] == ["Hala Residency"]
+
+
+def test_a_rating_needs_enough_reviews_behind_it():
+    raw = {
+        "properties": [
+            _prop("FabExpress Ascot", 1298, 5192, 4.2, "3-star hotel", reviews=19),
+            _prop("Hotel Prime Palace", 1040, 4160, 3.7, "3-star hotel", reviews=1287),
+        ]
+    }
+
+    assert [h["name"] for h in normalize_hotels(raw)] == ["Hotel Prime Palace"]
 
 
 def test_normalize_caps_the_list(monkeypatch):
@@ -96,6 +139,9 @@ def test_a_live_search_sends_the_stay_and_party_on_the_hotel_account(searches):
     assert params["q"] == "Kochi"
     assert (params["check_in_date"], params["check_out_date"]) == ("2026-10-27", "2026-10-30")
     assert params["adults"] == "2" and params["currency"] == "INR"
+    # 3 stars and up, rated 3.5+, cheapest first: asked of Google, not just
+    # filtered afterwards, so the cheapest real hotels come back at all.
+    assert (params["hotel_class"], params["rating"], params["sort_by"]) == ("3,4,5", "7", "3")
     assert source.status == "live" and len(hotels) == 3
 
 

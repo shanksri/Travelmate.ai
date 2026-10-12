@@ -105,6 +105,9 @@ def answer_prompt(
     )
     settings = settings or get_settings()
     graph = build_ask_graph(
-        provider or get_provider(), llm or _build_llm(settings), settings.max_itinerary_retries
+        provider or get_provider(),
+        llm or _build_llm(settings),
+        settings.max_itinerary_retries,
+        settings.route_model,
     )
     return answer_from_state(graph.invoke(initial_ask_state(prompt, choices)))

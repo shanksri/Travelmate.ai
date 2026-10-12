@@ -1,4 +1,5 @@
 import json
+from datetime import date
 
 from conftest import FakeLLM, draft_itinerary_json, draft_itinerary_payload
 
@@ -10,7 +11,8 @@ from app.agent.nodes import (
     build_resolve_destination_node,
 )
 from app.agent.state import initial_state
-from app.models.itinerary import Itinerary
+from app.models.itinerary import HotelStay, Itinerary, LodgingOption, RoutePlan, RouteStop
+from app.providers.mock import MockTravelProvider
 
 
 def test_resolve_destination_passes_through_a_named_destination(provider, trip_request):
@@ -116,15 +118,82 @@ def test_flight_agent_is_told_what_is_booked_rather_than_asked_to_guess(
     assert sent["booked_return"]["total"] == 7000
 
 
-def test_hotel_node_asks_the_llm_to_pick_an_option(provider, trip_request):
-    llm = FakeLLM(responses=["The Ardent House — best rated, worth the splurge."])
-    node = build_hotel_node(provider, llm)
-    state = initial_state(trip_request) | {"resolved_destination": "Lisbon, Portugal"}
+class _RecordingProvider(MockTravelProvider):
+    """The mock provider, noting every search it's asked for."""
 
-    result = node(state)
+    def __init__(self):
+        self.searches = []
 
-    assert len(result["hotel_results"]["options"]) > 0
-    assert "Ardent" in result["hotel_results"]["recommendation"]
+    def search_lodging_with_source(self, **query):
+        self.searches.append(("lodging", query))
+        return super().search_lodging_with_source(**query)
+
+    def search_flights_with_source(self, **query):
+        self.searches.append(("flights", query))
+        return super().search_flights_with_source(**query)
+
+
+def _two_town_route(trip_request) -> RoutePlan:
+    first = trip_request.nights - 1
+    return RoutePlan(
+        stops=[
+            RouteStop(city="Kochi", area="Kerala, India", nights=first),
+            RouteStop(city="Madurai", area="Tamil Nadu, India", nights=1),
+        ],
+        fly_into="Kochi",
+        fly_out_of="Madurai",
+        reasoning="test",
+    )
+
+
+def test_hotel_node_searches_each_town_for_its_own_nights(trip_request):
+    provider = _RecordingProvider()
+    node = build_hotel_node(provider)
+    route = _two_town_route(trip_request)
+    state = initial_state(trip_request) | {
+        "resolved_destination": "Kerala and Tamil Nadu",
+        "route_plan": route,
+    }
+
+    stays = node(state)["hotel_results"]["stays"]
+
+    assert [(s.city, s.check_in, s.nights) for s in stays] == [
+        ("Kochi", trip_request.start_date, trip_request.nights - 1),
+        ("Madurai", date.fromordinal(trip_request.end_date.toordinal() - 1), 1),
+    ]
+    assert all(s.options and s.source for s in stays)
+    searched = sorted(q["destination"] for kind, q in provider.searches)
+    # Town and state together, so Google can't take Kochi for Kochi, Japan.
+    assert searched == ["Kochi, Kerala, India", "Madurai, Tamil Nadu, India"]
+
+
+def test_flights_go_into_the_routes_first_airport_and_out_of_its_last(trip_request):
+    provider = _RecordingProvider()
+    llm = FakeLLM(responses=["Cheapest both ways."])
+    node = build_flight_node(provider, llm)
+    state = initial_state(trip_request) | {
+        "resolved_destination": "Kerala and Tamil Nadu",
+        "route_plan": _two_town_route(trip_request),
+    }
+
+    node(state)
+
+    legs = sorted((q["origin"], q["destination"]) for kind, q in provider.searches)
+    assert legs == [(trip_request.origin, "Kochi"), ("Madurai", trip_request.origin)]
+
+
+def test_no_flights_found_means_no_flight_llm_call(trip_request):
+    class _NoFlights(MockTravelProvider):
+        def search_flights_with_source(self, **query):
+            return [], None
+
+    llm = FakeLLM()  # nothing scripted: a call would fail the test
+    node = build_flight_node(_NoFlights(), llm)
+
+    result = node(initial_state(trip_request) | {"resolved_destination": "Lisbon, Portugal"})
+
+    assert llm.calls == []
+    assert result["flight_results"]["recommendation"] == ""
 
 
 def _real_flight_and_hotel_state(provider, trip_request, destination="Lisbon, Portugal"):
@@ -156,7 +225,16 @@ def _real_flight_and_hotel_state(provider, trip_request, destination="Lisbon, Po
                 "return_options": return_leg,
                 "recommendation": "Meridian Air both ways.",
             },
-            "hotel_results": {"options": hotels, "recommendation": "The Ardent House."},
+            "hotel_results": {
+                "stays": [
+                    HotelStay(
+                        city=destination,
+                        check_in=trip_request.start_date,
+                        nights=trip_request.nights,
+                        options=[LodgingOption(**h) for h in hotels],
+                    )
+                ]
+            },
         },
         outbound,
         return_leg,
@@ -168,7 +246,7 @@ def test_itinerary_node_assembles_flights_and_lodging_from_real_search_data(
     provider, trip_request
 ):
     llm = FakeLLM(responses=[draft_itinerary_json(trip_request)])
-    node = build_itinerary_node(provider, llm, max_retries=2)
+    node = build_itinerary_node(llm, max_retries=2)
     extra_state, outbound, return_leg, hotels = _real_flight_and_hotel_state(
         provider, trip_request
     )
@@ -189,7 +267,7 @@ def test_itinerary_node_assembles_flights_and_lodging_from_real_search_data(
     assert itinerary.outbound_flight.total == outbound[0]["total"]
     assert itinerary.return_flight.origin == "Lisbon, Portugal"
     assert itinerary.return_flight.total == return_leg[0]["total"]
-    assert [h.name for h in itinerary.lodging_options] == [h["name"] for h in hotels]
+    assert [h.name for h in itinerary.stays[0].options] == [h["name"] for h in hotels]
 
     activity_cost = sum(
         act["estimated_cost"]
@@ -207,7 +285,7 @@ def test_itinerary_node_assembles_flights_and_lodging_from_real_search_data(
 
 def test_itinerary_node_handles_no_flights_or_lodging_found(provider, trip_request):
     llm = FakeLLM(responses=[draft_itinerary_json(trip_request)])
-    node = build_itinerary_node(provider, llm, max_retries=2)
+    node = build_itinerary_node(llm, max_retries=2)
     state = initial_state(trip_request) | {
         "resolved_destination": "Lisbon, Portugal",
         "flight_results": {},
@@ -219,7 +297,7 @@ def test_itinerary_node_handles_no_flights_or_lodging_found(provider, trip_reque
 
     assert itinerary.outbound_flight is None
     assert itinerary.return_flight is None
-    assert itinerary.lodging_options == []
+    assert [s.options for s in itinerary.stays] == [[]]
     assert itinerary.total_estimated_cost == sum(
         act["estimated_cost"]
         for day in draft_itinerary_payload(trip_request)["days"]
@@ -249,7 +327,7 @@ def test_itinerary_node_books_on_the_travel_date_over_a_cheaper_day_nearby(
     start, end = trip_request.start_date, trip_request.end_date
     day_before = start.fromordinal(start.toordinal() - 1).isoformat()
     llm = FakeLLM(responses=[draft_itinerary_json(trip_request)])
-    node = build_itinerary_node(provider, llm, max_retries=2)
+    node = build_itinerary_node(llm, max_retries=2)
     state = initial_state(trip_request) | {
         "resolved_destination": "Lisbon, Portugal",
         # Sorted cheapest-first, as providers return them.
@@ -273,7 +351,7 @@ def test_itinerary_node_falls_back_to_a_nearby_day_when_none_on_the_date(
     start = trip_request.start_date
     next_day = start.fromordinal(start.toordinal() + 1).isoformat()
     llm = FakeLLM(responses=[draft_itinerary_json(trip_request)])
-    node = build_itinerary_node(provider, llm, max_retries=2)
+    node = build_itinerary_node(llm, max_retries=2)
     state = initial_state(trip_request) | {
         "resolved_destination": "Lisbon, Portugal",
         "flight_results": {"outbound_options": [_flight(next_day, 6500)]},
@@ -287,7 +365,7 @@ def test_itinerary_node_falls_back_to_a_nearby_day_when_none_on_the_date(
 
 def test_itinerary_node_retries_after_an_invalid_response(provider, trip_request):
     llm = FakeLLM(responses=["not json at all", draft_itinerary_json(trip_request)])
-    node = build_itinerary_node(provider, llm, max_retries=2)
+    node = build_itinerary_node(llm, max_retries=2)
     state = initial_state(trip_request) | {
         "resolved_destination": "Lisbon, Portugal",
         "flight_results": {},
@@ -303,7 +381,7 @@ def test_itinerary_node_retries_after_an_invalid_response(provider, trip_request
 
 def test_itinerary_node_gives_up_after_max_retries(provider, trip_request):
     llm = FakeLLM(responses=["nope", "still nope", "nope again"])
-    node = build_itinerary_node(provider, llm, max_retries=2)
+    node = build_itinerary_node(llm, max_retries=2)
     state = initial_state(trip_request) | {
         "resolved_destination": "Lisbon, Portugal",
         "flight_results": {},
@@ -380,11 +458,11 @@ def test_flight_node_skips_search_and_llm_when_flights_are_unchecked(trip_reques
 def test_hotel_node_skips_search_and_llm_when_hotels_are_unchecked(trip_request):
     request = trip_request.model_copy(update={"include_hotels": False})
     llm = FakeLLM()
-    node = build_hotel_node(_NoSearchProvider(), llm)
+    node = build_hotel_node(_NoSearchProvider())
 
     result = node(initial_state(request) | {"resolved_destination": "Lisbon, Portugal"})
 
-    assert result["hotel_results"]["options"] == []
+    assert [s.options for s in result["hotel_results"]["stays"]] == [[]]
     assert "not requested" in result["messages"][0]
     assert llm.calls == []
 
@@ -394,20 +472,42 @@ def test_itinerary_agent_is_told_flights_and_hotels_were_not_requested(provider,
     to improvise a hotel into the plan."""
     request = trip_request.model_copy(update={"include_flights": False, "include_hotels": False})
     llm = FakeLLM(responses=[draft_itinerary_json(request)])
-    node = build_itinerary_node(provider, llm, max_retries=2)
+    node = build_itinerary_node(llm, max_retries=2)
     state = initial_state(request) | {
         "resolved_destination": "Lisbon, Portugal",
         "flight_results": {"outbound_options": [], "return_options": []},
-        "hotel_results": {"options": []},
+        "hotel_results": {},
     }
 
     itinerary = node(state)["itinerary"]
 
     prompt = llm.calls[0]["user"]
     assert "didn't ask for flights" in prompt
-    assert "didn't ask for a hotel" in prompt
+    assert "didn't ask for hotels" in prompt
     assert itinerary.outbound_flight is None
-    assert itinerary.lodging_options == []
+    assert [s.options for s in itinerary.stays] == [[]]
+
+
+def test_the_itinerary_agent_is_given_the_route_and_no_sample_data(trip_request):
+    """The town for every date comes from the route, and the sample
+    attractions and weather the prompt used to carry are gone (the weather
+    said 10 °C for Kerala in October)."""
+    llm = FakeLLM(responses=[draft_itinerary_json(trip_request)])
+    node = build_itinerary_node(llm, max_retries=2)
+    state = initial_state(trip_request) | {
+        "resolved_destination": "Kerala and Tamil Nadu",
+        "route_plan": _two_town_route(trip_request),
+        "flight_results": {},
+        "hotel_results": {},
+    }
+
+    node(state)
+
+    prompt = llm.calls[0]["user"]
+    assert "Route, fixed (plan the days around it):\n- Kochi: 2 night(s)" in prompt
+    bases = json.loads(prompt.split("Use exactly these: ")[1].split("\n")[0])
+    assert list(bases.values()) == ["Kochi", "Kochi", "Madurai", "Madurai"]
+    assert "attractions" not in prompt.lower() and "weather" not in prompt.lower()
 
 
 def test_both_are_searched_by_default(provider, trip_request):
@@ -424,7 +524,7 @@ def test_each_retry_is_told_every_earlier_rejection(provider, trip_request):
     llm = FakeLLM(
         responses=["not json at all", json.dumps(one_day), draft_itinerary_json(trip_request)]
     )
-    node = build_itinerary_node(provider, llm, max_retries=2)
+    node = build_itinerary_node(llm, max_retries=2)
     state = initial_state(trip_request) | {
         "resolved_destination": "Lisbon, Portugal",
         "flight_results": {},
@@ -442,7 +542,7 @@ def test_each_retry_is_told_every_earlier_rejection(provider, trip_request):
 
 def test_the_itinerary_agents_memory_stays_inside_it(provider, trip_request):
     llm = FakeLLM(responses=["not json at all", draft_itinerary_json(trip_request)])
-    node = build_itinerary_node(provider, llm, max_retries=2)
+    node = build_itinerary_node(llm, max_retries=2)
     state = initial_state(trip_request) | {
         "resolved_destination": "Lisbon, Portugal",
         "flight_results": {},

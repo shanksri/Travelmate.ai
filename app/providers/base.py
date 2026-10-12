@@ -42,6 +42,11 @@ class TravelProvider(Protocol):
         """`search_lodging`, plus where the results came from."""
         ...
 
+    def has_airport(self, city: str) -> bool:
+        """Whether flights can be searched to or from `city` by that name.
+        The route planner checks the airports it picks with this."""
+        ...
+
     def search_attractions(
         self, destination: str, interests: list[str], limit: int
     ) -> list[dict[str, Any]]:

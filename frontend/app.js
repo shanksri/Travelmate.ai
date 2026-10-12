@@ -91,7 +91,8 @@ form.addEventListener("submit", async (event) => {
   resultEl.hidden = true;
   reviseCard.hidden = true;
   submitButton.disabled = true;
-  setStatus("loading", "Starting…");
+  hideStatus();
+  startProgress();
 
   try {
     // A job runs on the server and streams what it's doing (app/jobs.py);
@@ -115,10 +116,142 @@ form.addEventListener("submit", async (event) => {
     history.replaceState(null, "", `#job=${data.job_id}`);
     followJob(data.job_id);
   } catch (err) {
+    endProgress("failed");
     setStatus("error", err.message || "Something went wrong.");
     submitButton.disabled = false;
   }
 });
+
+// --- progress: one row per step ----------------------------------------------------
+// Each step of the plan reports itself as it starts and ends (`status` events
+// with a stage and a state: active, done, skipped or warn). The rows a
+// request will go through are known once the server says what kind of
+// request it is (`intent`).
+
+const progressEl = document.getElementById("progress");
+
+const STEP_LABELS = {
+  interpret: "Understanding your request",
+  route_plan: "Choosing the cities and nights",
+  flights: "Searching flights",
+  hotels: "Searching hotels",
+  itinerary: "Writing the day-by-day plan",
+  summary: "Writing the trip summary",
+  restaurants: "Finding places to eat",
+  places: "Searching Google Maps",
+  route: "Working out the route",
+};
+
+const STEPS_FOR = {
+  trip: ["interpret", "route_plan", "flights", "hotels", "itinerary", "summary", "restaurants"],
+  places: ["interpret", "places"],
+  route: ["interpret", "route"],
+};
+
+let progress = null;
+
+function startProgress() {
+  stopProgressTimer();
+  progress = { steps: [], started: Date.now(), ended: null, outcome: null, timer: null };
+  setStep("interpret", "active", "Reading your request…");
+  progress.timer = setInterval(renderProgress, 1000);
+  renderProgress();
+}
+
+function stopProgressTimer() {
+  if (progress && progress.timer) clearInterval(progress.timer);
+  if (progress) progress.timer = null;
+}
+
+function hideProgress() {
+  stopProgressTimer();
+  progress = null;
+  progressEl.hidden = true;
+  progressEl.innerHTML = "";
+}
+
+function findStep(key) {
+  let step = progress.steps.find((s) => s.key === key);
+  if (!step) {
+    step = { key, state: "pending", detail: "" };
+    progress.steps.push(step);
+  }
+  return step;
+}
+
+function setStep(key, state, detail) {
+  if (!progress) return;
+  const step = findStep(key);
+  step.state = state;
+  if (detail !== undefined) step.detail = detail;
+  renderProgress();
+}
+
+function stepDetail(key, detail) {
+  if (!progress) return;
+  findStep(key).detail = detail;
+  renderProgress();
+}
+
+// The rows for this kind of request, in order, keeping what's arrived.
+function planSteps(kind) {
+  if (!progress) return;
+  const known = new Map(progress.steps.map((s) => [s.key, s]));
+  progress.steps = (STEPS_FOR[kind] || ["interpret"]).map(
+    (key) => known.get(key) || { key, state: "pending", detail: "" }
+  );
+  for (const [key, step] of known) {
+    if (!progress.steps.includes(step)) progress.steps.push(step);
+  }
+  renderProgress();
+}
+
+function endProgress(outcome) {
+  if (!progress) return;
+  stopProgressTimer();
+  progress.ended = Date.now();
+  progress.outcome = outcome;
+  for (const step of progress.steps) {
+    if (step.state === "active") step.state = outcome === "failed" ? "failed" : "done";
+  }
+  renderProgress();
+}
+
+function renderProgress() {
+  if (!progress) return;
+  const seconds = Math.round(((progress.ended || Date.now()) - progress.started) / 1000);
+  const title =
+    progress.outcome === "failed"
+      ? `Stopped after ${seconds} s`
+      : progress.outcome === "done"
+        ? `Done in ${seconds} s`
+        : "Working on it…";
+  progressEl.hidden = false;
+  progressEl.innerHTML = `
+    <div class="progress-head">
+      <span class="progress-title">${title}</span>
+      ${progress.outcome ? "" : `<span class="progress-time">${seconds} s</span>`}
+    </div>
+    <ol class="steps">
+      ${progress.steps
+        .map(
+          (step) => `
+        <li class="step ${step.state}">
+          <span class="step-icon" aria-hidden="true"></span>
+          <div>
+            <div class="step-label">${escapeHtml(STEP_LABELS[step.key] || step.key)}</div>
+            ${step.detail ? `<div class="step-detail">${escapeHtml(step.detail)}</div>` : ""}
+          </div>
+        </li>`
+        )
+        .join("")}
+    </ol>`;
+}
+
+function tripDayCount() {
+  if (!live || !live.route) return null;
+  return live.route.stops.reduce((sum, stop) => sum + stop.nights, 0) + 1;
+}
 
 // --- following a job's events ----------------------------------------------------
 // The server sends each step as it happens: status lines, flights and hotels
@@ -135,8 +268,12 @@ function jobInUrl() {
 
 function followJob(jobId) {
   if (jobSource) jobSource.close();
-  live = { kind: null, flights: null, hotels: null, days: [], trip: null, cities: [], failed: false };
+  live = {
+    kind: null, route: null, flights: null, hotels: null, days: [], trip: null, cities: [],
+    failed: false,
+  };
   submitButton.disabled = true;
+  if (!progress) startProgress();  // reattaching after a reload
 
   jobSource = new EventSource(`/jobs/${encodeURIComponent(jobId)}/events`);
   jobSource.onmessage = (message) => handleJobEvent(JSON.parse(message.data));
@@ -148,6 +285,7 @@ function followJob(jobId) {
       jobSource = null;
       submitButton.disabled = false;
       history.replaceState(null, "", location.pathname);
+      hideProgress();
       setStatus(
         "error",
         "This plan's progress isn't available any more (the server may have restarted). " +
@@ -160,10 +298,15 @@ function followJob(jobId) {
 function handleJobEvent(event) {
   switch (event.type) {
     case "status":
-      setStatus("loading", event.message);
+      setStep(event.stage, event.state || "active", event.message);
       break;
     case "intent":
       live.kind = event.kind;
+      planSteps(event.kind);
+      break;
+    case "stops":
+      live.route = event.route;
+      renderLive();
       break;
     case "flights":
       live.flights = event;
@@ -173,10 +316,13 @@ function handleJobEvent(event) {
       live.hotels = event;
       renderLive();
       break;
-    case "day":
+    case "day": {
       live.days.push(event.day);
+      const total = tripDayCount();
+      stepDetail("itinerary", `Day ${live.days.length}${total ? ` of ${total}` : ""} written`);
       renderLive();
       break;
+    }
     case "days_reset":
       live.days = [];
       renderLive();
@@ -187,6 +333,7 @@ function handleJobEvent(event) {
       break;
     case "city":
       live.cities.push(event.city);
+      stepDetail("restaurants", live.cities.map((c) => c.city).join(", "));
       renderLive();
       break;
     case "places":
@@ -197,12 +344,16 @@ function handleJobEvent(event) {
       break;
     case "error":
       live.failed = true;
+      endProgress("failed");
       setStatus("error", event.detail);
       break;
     case "done":
       jobSource.close();
       jobSource = null;
-      if (!live.failed) hideStatus();
+      if (!live.failed) {
+        hideStatus();
+        endProgress("done");
+      }
       submitButton.disabled = false;
       break;
   }
@@ -233,14 +384,16 @@ function renderLive() {
   const flights = live.flights;
   const hotels = live.hotels;
   const writing = live.days.length ? "Writing the next day…" : "Writing your plan…";
+  const stops = live.route ? live.route.stops : [];
   resultEl.innerHTML = `
     <div class="result-header">
       <h2>Your Trip Plan</h2>
       <span class="trip-id">Planning…</span>
     </div>
+    ${stops.length ? `<div class="card">${renderRouteLine(stops)}</div>` : ""}
     ${flights ? renderFlightTable("Outbound options", flights.outbound_options, null, flights.outbound_source) : ""}
     ${flights ? renderFlightTable("Return options", flights.return_options, null, flights.return_source) : ""}
-    ${hotels ? renderHotelCard(hotels.options, hotels.source) : ""}
+    ${hotels ? renderStaysCard(hotels.stays) : ""}
     <div class="card">
       <h3>Day by day</h3>
       ${live.days.map(renderDay).join("")}
@@ -257,6 +410,7 @@ reviseForm.addEventListener("submit", async (event) => {
 
   reviseButton.disabled = true;
   submitButton.disabled = true;
+  hideProgress();
   setStatus("loading", "Updating your plan — this rewrites the itinerary and can take 30-60 seconds...");
 
   try {
@@ -603,20 +757,44 @@ function renderRoute(route) {
     </div>`);
 }
 
-function renderHotelCard(options, source) {
-  if (options && options.length) {
-    return `<div class="card">
-        <h3>Where to stay</h3>
-        ${sourceLine(source)}
+function shortDate(iso) {
+  return new Date(`${iso}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+}
+
+function nightsText(n) {
+  return `${n} night${n === 1 ? "" : "s"}`;
+}
+
+// "Route: Thiruvananthapuram (2 nights) → Kochi (3 nights)"
+function renderRouteLine(stops) {
+  const parts = stops.map((s) => `${escapeHtml(s.city)} (${nightsText(s.nights)})`);
+  return `<p class="trip-route">Route: ${parts.join(" → ")}</p>`;
+}
+
+function renderStay(stay) {
+  const head = `<h4>${escapeHtml(stay.city)} <span class="stay-dates">· ${nightsText(stay.nights)} from ${shortDate(stay.check_in)}</span></h4>`;
+  if (stay.options && stay.options.length) {
+    return `<div class="stay">
+        ${head}
+        ${sourceLine(stay.source)}
         <ul class="hotel-list">
-          ${options.map((h, i) => renderHotelItem(h, i === 0)).join("")}
+          ${stay.options.map((h, i) => renderHotelItem(h, i === 0)).join("")}
         </ul>
       </div>`;
   }
-  if (source && source.status === "unavailable") {
-    return `<div class="card"><h3>Where to stay</h3>${sourceLine(source)}</div>`;
-  }
-  return "";
+  if (!stay.source) return "";
+  const line =
+    stay.source.status === "unavailable"
+      ? sourceLine(stay.source)
+      : `<p class="source-line">${escapeHtml(stay.source.provider)} has no 3-star-or-better hotels here for these dates.${sourceLink(stay.source)}</p>`;
+  return `<div class="stay">${head}${line}</div>`;
+}
+
+// One block per town the trip sleeps in, each with its own hotels.
+function renderStaysCard(stays) {
+  const blocks = (stays || []).map(renderStay).filter(Boolean);
+  if (!blocks.length) return "";
+  return `<div class="card"><h3>Where to stay</h3>${blocks.join("")}</div>`;
 }
 
 function renderTrip(trip) {
@@ -636,6 +814,7 @@ function renderTrip(trip) {
 
     <div class="card trip-header">
       <h2>${escapeHtml(it.destination)} — ${escapeHtml(it.start_date)} to ${escapeHtml(it.end_date)}, ${it.travelers} traveller(s)</h2>
+      ${it.stays && it.stays.length ? renderRouteLine(it.stays) : ""}
       ${total ? `<p class="trip-cost">Estimated total: ${total}</p>` : ""}
       ${trip.summary ? `<p class="summary">${escapeHtml(trip.summary)}</p>` : ""}
     </div>
@@ -643,7 +822,7 @@ function renderTrip(trip) {
     ${renderFlightTable("Outbound options", it.outbound_options, it.outbound_flight, it.outbound_source)}
     ${renderFlightTable("Return options", it.return_options, it.return_flight, it.return_source)}
 
-    ${renderHotelCard(it.lodging_options, it.lodging_source)}
+    ${renderStaysCard(it.stays)}
 
     <div class="card">
       <h3>Day by day</h3>

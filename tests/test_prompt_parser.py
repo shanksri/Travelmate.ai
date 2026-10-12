@@ -272,11 +272,15 @@ def test_the_prompt_describes_all_three_intents():
         assert phrase in PARSE_REQUEST_SYSTEM
 
 
-def test_the_itinerary_prompt_shares_days_across_named_regions():
+def test_the_route_planner_shares_nights_across_named_regions():
     """Live, "10 day itinerary for tamil nadu and kerala" gave Tamil Nadu 2 of
-    10 days (Kanyakumari only) and spent 2 days going back to Kochi."""
-    from app.agent.prompts import ITINERARY_AGENT_SYSTEM
+    10 days (Kanyakumari only) and spent 2 days going back to Kochi. The route
+    is decided before the days now (app/agent/route_plan.py)."""
+    from app.agent.prompts import ITINERARY_AGENT_SYSTEM, ROUTE_PLAN_SYSTEM
 
-    assert "Several states, regions or countries named together" in ITINERARY_AGENT_SYSTEM
-    assert "fair share of the days" in ITINERARY_AGENT_SYSTEM
-    assert "Don't spend a day travelling back to the first city" in ITINERARY_AGENT_SYSTEM
+    flat = " ".join(ROUTE_PLAN_SYSTEM.split())
+    assert "several of them together" in flat
+    assert "give each a fair share of the nights" in flat
+    assert "doesn't double back" in flat
+    assert "Don't route the trip back to the first stop" in flat
+    assert "The route is fixed" in ITINERARY_AGENT_SYSTEM

@@ -76,6 +76,19 @@ def draft_itinerary_json(request: TripRequest, **overrides) -> str:
     return json.dumps(draft_itinerary_payload(request) | overrides)
 
 
+def route_json(*stops: tuple[str, int], fly_into=None, fly_out_of=None) -> str:
+    """A ROUTE_PLAN_SYSTEM answer, from (town, nights) pairs. Flies into
+    the first town and out of the last unless told otherwise."""
+    return json.dumps(
+        {
+            "stops": [{"city": city, "area": "", "nights": nights} for city, nights in stops],
+            "fly_into": fly_into or stops[0][0],
+            "fly_out_of": fly_out_of or stops[-1][0],
+            "reasoning": "test route",
+        }
+    )
+
+
 def sample_planned_trip(
     request: TripRequest,
     trip_id: str = "abc123",

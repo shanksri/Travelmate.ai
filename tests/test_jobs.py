@@ -6,16 +6,16 @@ import json
 from datetime import date
 
 import pytest
-from conftest import FakeLLM
+from conftest import FakeLLM, route_json
 from fastapi.testclient import TestClient
 
 from app import jobs
 from app.agent.prompts import (
     FINAL_RESPONSE_AGENT_SYSTEM,
     FLIGHT_AGENT_SYSTEM,
-    HOTEL_AGENT_SYSTEM,
     ITINERARY_AGENT_SYSTEM,
     PARSE_REQUEST_SYSTEM,
+    ROUTE_PLAN_SYSTEM,
 )
 from app.agent.state import PageChoices
 from app.main import app
@@ -63,8 +63,8 @@ def trip_llm(cities=("Kochi", "Munnar"), itinerary_answers=None, **parse_fields)
     return StreamingFakeLLM(
         by_system={
             PARSE_REQUEST_SYSTEM: [_parse(**(parse | parse_fields))],
+            ROUTE_PLAN_SYSTEM: [route_json((cities[0], max(len(cities) - 1, 1)))],
             FLIGHT_AGENT_SYSTEM: ["ok"],
-            HOTEL_AGENT_SYSTEM: ["ok"],
             ITINERARY_AGENT_SYSTEM: itinerary_answers or [_days(cities)],
             FINAL_RESPONSE_AGENT_SYSTEM: ["Two days in Kerala."],
         }
@@ -127,7 +127,39 @@ def test_flights_and_hotels_arrive_with_their_sources(maps):
     flights = next(e for e in job.events if e["type"] == "flights")
     hotels = next(e for e in job.events if e["type"] == "hotels")
     assert flights["outbound_options"] and flights["outbound_source"]["status"] == "sample"
-    assert hotels["options"] and hotels["source"]["status"] == "sample"
+    (kochi,) = hotels["stays"]  # one town on this route
+    assert kochi["city"] == "Kochi"
+    assert kochi["options"] and kochi["source"]["status"] == "sample"
+
+
+def test_the_route_arrives_before_flights_and_hotels(maps):
+    job, _ = run(trip_llm())
+    kinds = types(job)
+
+    stops = next(e for e in job.events if e["type"] == "stops")
+    assert [s["city"] for s in stops["route"]["stops"]] == ["Kochi"]
+    assert kinds.index("stops") < kinds.index("flights")
+    assert kinds.index("stops") < kinds.index("hotels")
+
+
+def test_each_step_reports_starting_and_finishing(maps):
+    """What the page's step list is drawn from."""
+    job, _ = run(trip_llm(), include_restaurants=True)
+
+    states = {}
+    for e in job.events:
+        if e["type"] == "status":
+            states.setdefault(e["stage"], []).append(e["state"])
+    for stage in ("interpret", "route_plan", "flights", "hotels", "itinerary", "summary"):
+        assert states[stage][0] == "active" and states[stage][-1] == "done", stage
+    assert states["restaurants"][0] == "active"
+
+
+def test_unticked_steps_report_themselves_skipped(maps):
+    job, _ = run(trip_llm(), include_flights=False, include_hotels=False)
+
+    skipped = {e["stage"] for e in job.events if e["type"] == "status" and e["state"] == "skipped"}
+    assert skipped == {"flights", "hotels", "restaurants"}
 
 
 def test_every_event_is_plain_json(maps):

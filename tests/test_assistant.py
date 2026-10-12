@@ -8,7 +8,7 @@ import json
 from datetime import date
 
 import pytest
-from conftest import FakeLLM
+from conftest import FakeLLM, route_json
 
 from app.agent import assistant
 from app.agent.assistant import answer_prompt
@@ -16,9 +16,9 @@ from app.agent.prompt_parser import PromptParseError
 from app.agent.prompts import (
     FINAL_RESPONSE_AGENT_SYSTEM,
     FLIGHT_AGENT_SYSTEM,
-    HOTEL_AGENT_SYSTEM,
     ITINERARY_AGENT_SYSTEM,
     PARSE_REQUEST_SYSTEM,
+    ROUTE_PLAN_SYSTEM,
 )
 from app.core.config import Settings
 from app.models.maps import PlaceLink, PlacesAnswer, RouteAnswer
@@ -90,8 +90,8 @@ def trip_llm(cities=("Kochi", "Munnar", "Munnar"), **parse_fields) -> FakeLLM:
     return FakeLLM(
         by_system={
             PARSE_REQUEST_SYSTEM: [_parse(**parse)],
+            ROUTE_PLAN_SYSTEM: [route_json((cities[0], max(len(cities) - 1, 1)))],
             FLIGHT_AGENT_SYSTEM: ["Cheapest on the day."],
-            HOTEL_AGENT_SYSTEM: ["Cheapest is fine."],
             ITINERARY_AGENT_SYSTEM: [_days(list(cities))],
             FINAL_RESPONSE_AGENT_SYSTEM: ["Three days in Kerala."],
         }
@@ -170,7 +170,7 @@ def test_the_pages_choices_shape_the_trip(maps, settings):
     assert request.include_flights is False and request.include_hotels is True
     assert (request.start_date, request.end_date) == (START, END)
     assert answer.trip.itinerary.outbound_options == []  # flights unticked: not searched
-    assert answer.trip.itinerary.lodging_source.status == "sample"
+    assert all(s.source.status == "sample" for s in answer.trip.itinerary.stays)
 
 
 def test_a_trip_with_no_destination_is_refused_before_planning(maps, settings):

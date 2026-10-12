@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     # traveller in Leh on departure day. gpt-4o declined it correctly. Same
     # JSON-mode requirement as `model`.
     revise_model: str = "gpt-4o"
+
+    # The route planner only (app/agent/route_plan.py): which towns to sleep
+    # in, for how many nights, and which airports to use. gpt-4o-mini split
+    # "Kerala and Tamil Nadu" unevenly and doubled back; the answer is a few
+    # lines, so the stronger model costs a fraction of a cent per trip.
+    route_model: str = "gpt-4o"
     temperature: float = 0.3
 
     # OpenAI's JSON mode guarantees syntactically valid JSON *except* when the

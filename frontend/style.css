@@ -542,3 +542,158 @@ button[type="submit"]:not(:disabled):hover {
   padding-left: 1.2rem;
   color: #cdd3e6;
 }
+
+/* --- Progress: one row per step of the plan ------------------------------ */
+
+.progress {
+  padding: 1.1rem 1.4rem;
+}
+
+.progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.progress-title {
+  font-weight: 700;
+  color: #cdd3e6;
+}
+
+.progress-time {
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 1.25rem 1fr;
+  gap: 0.6rem;
+  align-items: start;
+}
+
+.step-icon {
+  width: 1.1rem;
+  height: 1.1rem;
+  margin-top: 0.1rem;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  display: grid;
+  place-items: center;
+  font-size: 0.7rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.step-label {
+  font-size: 0.92rem;
+  color: var(--muted);
+}
+
+.step-detail {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-top: 0.1rem;
+  overflow-wrap: anywhere;
+}
+
+.step.active .step-label,
+.step.done .step-label,
+.step.warn .step-label,
+.step.failed .step-label {
+  color: var(--ink);
+}
+
+.step.active .step-icon {
+  border-color: var(--accent-1);
+  border-top-color: transparent;
+  animation: spin 0.8s linear infinite;
+}
+
+.step.done .step-icon {
+  border-color: var(--good);
+  color: var(--good);
+}
+
+.step.done .step-icon::after {
+  content: "✓";
+}
+
+.step.skipped .step-icon {
+  border-style: dashed;
+}
+
+.step.skipped .step-icon::after {
+  content: "–";
+  color: var(--muted);
+}
+
+.step.warn .step-icon {
+  border-color: #f0b45a;
+  color: #f0b45a;
+}
+
+.step.warn .step-icon::after {
+  content: "!";
+}
+
+.step.warn .step-detail {
+  color: #f0b45a;
+}
+
+.step.failed .step-icon {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.step.failed .step-icon::after {
+  content: "✕";
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .step.active .step-icon {
+    animation: none;
+    border-top-color: var(--accent-1);
+  }
+}
+
+/* --- Hotels per town, and the route line -------------------------------- */
+
+.stay + .stay {
+  margin-top: 1rem;
+}
+
+.stay h4 {
+  margin: 0 0 0.55rem;
+  font-size: 0.95rem;
+  color: var(--ink);
+}
+
+.stay-dates {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.trip-route {
+  color: #cdd3e6;
+  margin: 0 0 0.6rem;
+  font-size: 0.92rem;
+}

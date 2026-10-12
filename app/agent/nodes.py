@@ -13,7 +13,7 @@ import json
 import logging
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, timedelta
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -27,7 +27,6 @@ from app.agent.llm import LLM
 from app.agent.prompts import (
     FINAL_RESPONSE_AGENT_SYSTEM,
     FLIGHT_AGENT_SYSTEM,
-    HOTEL_AGENT_SYSTEM,
     ITINERARY_AGENT_SYSTEM,
     describe_request,
 )
@@ -38,9 +37,11 @@ from app.models.itinerary import (
     DayPlan,
     DraftItinerary,
     FlightLeg,
+    HotelStay,
     Itinerary,
     LodgingOption,
     PlannedTrip,
+    RouteStop,
     TripRequest,
     draft_itinerary_for,
 )
@@ -96,15 +97,44 @@ def build_resolve_destination_node(provider: TravelProvider):
     return node
 
 
+def _route_stops(state: TravelState) -> list[RouteStop]:
+    """The towns the trip sleeps in, from the route step; one stop at the
+    destination when there's no route (a state built by hand in a test)."""
+    plan = state.get("route_plan")
+    if plan and plan.stops:
+        return plan.stops
+    return [RouteStop(city=state["resolved_destination"], area="", nights=state["request"].nights)]
+
+
+def _stays_for(request: TripRequest, stops: list[RouteStop]) -> list[HotelStay]:
+    """One stay per stop, its check-in following on from the one before."""
+    stays, check_in = [], request.start_date
+    for stop in stops:
+        stays.append(HotelStay(city=stop.city, check_in=check_in, nights=stop.nights))
+        check_in += timedelta(days=stop.nights)
+    return stays
+
+
+def _flight_ends(state: TravelState) -> tuple[str, str]:
+    """Where the outbound flight lands and the return flight leaves from."""
+    plan = state.get("route_plan")
+    destination = state["resolved_destination"]
+    if plan is None:
+        return destination, destination
+    return plan.fly_into or destination, plan.fly_out_of or destination
+
+
 def build_flight_node(provider: TravelProvider, llm: LLM):
-    """Searches both legs — there and back — since a trip needs both to be
-    actually bookable. The cheapest option in each list is what ends up on
-    the final itinerary (see build_itinerary_node); the LLM's job here is
-    just to explain that pick or flag a concern with it."""
+    """Searches both legs, there and back, since a trip needs both to be
+    actually bookable: into the route's first airport and out of its last
+    (`route_plan`), which needn't be the same one. The cheapest option on
+    each travel date is what gets booked (see build_itinerary_node); the
+    LLM's job here is just to explain that pick or flag a concern with it."""
 
     def node(state: TravelState) -> dict:
         request = state["request"]
         if not request.include_flights:
+            status("flights", "Not requested", state="skipped")
             return {
                 "flight_results": {
                     "outbound_options": [],
@@ -114,6 +144,7 @@ def build_flight_node(provider: TravelProvider, llm: LLM):
                 "messages": ["flight_agent: skipped (flights not requested)"],
             }
         if not request.origin:
+            status("flights", "No starting city given", state="skipped")
             return {
                 "flight_results": {
                     "outbound_options": [],
@@ -123,8 +154,8 @@ def build_flight_node(provider: TravelProvider, llm: LLM):
                 "messages": ["flight_agent: skipped (no origin given)"],
             }
 
-        destination = state["resolved_destination"]
-        status("flights", f"Searching flights from {request.origin} to {destination}…")
+        arrive, leave = _flight_ends(state)
+        status("flights", f"{request.origin} → {arrive}, and {leave} → {request.origin}…")
         # Both legs at once: they're independent, and a live search takes
         # ~4 s each, so searching them one after the other doubled the wait.
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -133,7 +164,7 @@ def build_flight_node(provider: TravelProvider, llm: LLM):
                 provider,
                 "flights",
                 origin=request.origin,
-                destination=destination,
+                destination=arrive,
                 depart=request.start_date,
                 travelers=request.travelers,
             )
@@ -141,7 +172,7 @@ def build_flight_node(provider: TravelProvider, llm: LLM):
                 _search_with_source,
                 provider,
                 "flights",
-                origin=destination,
+                origin=leave,
                 destination=request.origin,
                 depart=request.end_date,
                 travelers=request.travelers,
@@ -150,22 +181,38 @@ def build_flight_node(provider: TravelProvider, llm: LLM):
                 outbound_search.result(),
                 return_search.result(),
             )
-        recommendation = llm.complete(
-            system=FLIGHT_AGENT_SYSTEM,
-            user=json.dumps(
-                {
-                    "outbound_date": request.start_date,
-                    "return_date": request.end_date,
-                    "party_size": request.travelers,
-                    "budget": request.budget,
-                    "booked_outbound": _booked_option(outbound, request.start_date),
-                    "booked_return": _booked_option(return_leg, request.end_date),
-                    "outbound_options": outbound,
-                    "return_options": return_leg,
-                },
-                default=str,
-            ),
+
+        found = (
+            f"flight_agent: {len(outbound)} outbound{_status(outbound_source)}, "
+            f"{len(return_leg)} return{_status(return_source)} option(s) found"
         )
+        if outbound or return_leg:
+            recommendation = llm.complete(
+                system=FLIGHT_AGENT_SYSTEM,
+                user=json.dumps(
+                    {
+                        "outbound_date": request.start_date,
+                        "return_date": request.end_date,
+                        "party_size": request.travelers,
+                        "budget": request.budget,
+                        "booked_outbound": _booked_option(outbound, request.start_date),
+                        "booked_return": _booked_option(return_leg, request.end_date),
+                        "outbound_options": outbound,
+                        "return_options": return_leg,
+                    },
+                    default=str,
+                ),
+            )
+            found += ", recommended a pick for each"
+        else:
+            # Nothing to explain, so no call.
+            recommendation = ""
+
+        summary = f"{len(outbound)} outbound, {len(return_leg)} return options"
+        missing = [s.detail for s in (outbound_source, return_source) if s and s.detail]
+        if not (outbound and return_leg) and missing:
+            summary += f" ({missing[0]})"
+        status("flights", summary, state="done" if outbound and return_leg else "warn")
         return {
             "flight_results": {
                 "outbound_options": outbound,
@@ -174,58 +221,68 @@ def build_flight_node(provider: TravelProvider, llm: LLM):
                 "return_source": return_source,
                 "recommendation": recommendation,
             },
-            "messages": [
-                f"flight_agent: {len(outbound)} outbound{_status(outbound_source)}, "
-                f"{len(return_leg)} return{_status(return_source)} option(s) found, "
-                "recommended a pick for each"
-            ],
+            "messages": [found],
         }
 
     return node
 
 
-def build_hotel_node(provider: TravelProvider, llm: LLM):
+def _hotel_place(stop: RouteStop) -> str:
+    """What's searched: "Kochi, Kerala, India", not a bare "Kochi" that
+    Google could take for Kochi in Japan."""
+    return f"{stop.city}, {stop.area}" if stop.area else stop.city
+
+
+def build_hotel_node(provider: TravelProvider):
+    """One hotel search per town on the route, for that town's own nights,
+    all at once. The cheapest of each town's options is booked. No LLM: an
+    explanation of the pick was written here once, and nothing read it."""
+
     def node(state: TravelState) -> dict:
         request = state["request"]
+        stops = _route_stops(state)
+        stays = _stays_for(request, stops)
         if not request.include_hotels:
+            status("hotels", "Not requested", state="skipped")
             return {
-                "hotel_results": {
-                    "options": [],
-                    "recommendation": "Hotels weren't requested, so hotel search was skipped.",
-                },
+                "hotel_results": {"stays": stays},
                 "messages": ["hotel_agent: skipped (hotels not requested)"],
             }
 
-        status("hotels", f"Searching hotels in {state['resolved_destination']}…")
-        options, source = _search_with_source(
-            provider,
-            "lodging",
-            destination=state["resolved_destination"],
-            check_in=request.start_date,
-            nights=request.nights,
-            travelers=request.travelers,
-        )
-        recommendation = llm.complete(
-            system=HOTEL_AGENT_SYSTEM,
-            user=json.dumps(
-                {
-                    "party_size": request.travelers,
-                    "interests": request.interests,
-                    "budget": request.budget,
-                    "options": options,
-                },
-                default=str,
-            ),
+        searched = [i for i, stop in enumerate(stops) if stop.nights > 0]
+        status("hotels", ", ".join(stops[i].city for i in searched) + "…")
+        with ThreadPoolExecutor(max_workers=max(1, len(searched))) as pool:
+            searches = {
+                i: pool.submit(
+                    _search_with_source,
+                    provider,
+                    "lodging",
+                    destination=_hotel_place(stops[i]),
+                    check_in=stays[i].check_in,
+                    nights=stops[i].nights,
+                    travelers=request.travelers,
+                )
+                for i in searched
+            }
+            for i, search in searches.items():
+                options, source = search.result()
+                stays[i] = stays[i].model_copy(
+                    update={"options": _lodging_options(options), "source": source}
+                )
+
+        found = [
+            f"{len(stays[i].options)} in {stays[i].city}{_status(stays[i].source)}"
+            for i in searched
+        ]
+        everywhere = all(stays[i].options for i in searched)
+        status(
+            "hotels",
+            " · ".join(f"{stays[i].city} {len(stays[i].options)}" for i in searched),
+            state="done" if everywhere else "warn",
         )
         return {
-            "hotel_results": {
-                "options": options,
-                "source": source,
-                "recommendation": recommendation,
-            },
-            "messages": [
-                f"hotel_agent: {len(options)} option(s) found{_status(source)}, recommended one"
-            ],
+            "hotel_results": {"stays": stays},
+            "messages": [f"hotel_agent: option(s) found: {', '.join(found)}"],
         }
 
     return node
@@ -353,6 +410,7 @@ def build_itinerary_agent(llm: LLM) -> CompiledStateGraph:
         if state["rejections"]:
             # Days already shown came from an attempt that was rejected.
             emit({"type": "days_reset"})
+            status("itinerary", "An attempt didn't pass the checks; writing it again…")
         prompt = _with_rejections(state["base_prompt"], state["rejections"])
         return {"raw": _write_itinerary(llm, prompt, state["day_count"])}
 
@@ -378,15 +436,31 @@ def build_itinerary_agent(llm: LLM) -> CompiledStateGraph:
     return graph.compile()
 
 
-def build_itinerary_node(provider: TravelProvider, llm: LLM, max_retries: int):
+def _leg_words(leg: FlightLeg) -> str:
+    when = leg.departure_at.strftime("%Y-%m-%d %H:%M") if leg.departure_at else leg.depart_date
+    length = f", about {leg.duration_hours:g} h" if leg.duration_hours else ""
+    return f"{leg.carrier} {leg.origin} → {leg.destination}, departing {when}{length}"
+
+
+def _base_by_date(request: TripRequest, stays: list[HotelStay]) -> dict[str, str]:
+    """The town each day is based in: where that night is spent, and on the
+    last day, the town the trip leaves from."""
+    bases: dict[str, str] = {}
+    for stay in stays:
+        for offset in range(stay.nights):
+            bases[(stay.check_in + timedelta(days=offset)).isoformat()] = stay.city
+    last = stays[-1].city
+    return {day.isoformat(): bases.get(day.isoformat(), last) for day in request.dates}
+
+
+def build_itinerary_node(llm: LLM, max_retries: int):
     agent = build_itinerary_agent(llm)
 
     def node(state: TravelState) -> dict:
         request = state["request"]
         destination = state["resolved_destination"]
-        status("itinerary", "Writing your day-by-day plan…")
-        attractions = provider.search_attractions(destination, request.interests, limit=10)
-        weather = provider.get_weather_outlook(destination, request.start_date)
+        trip_dates = [d.isoformat() for d in request.dates]
+        status("itinerary", f"Writing {len(trip_dates)} days…")
 
         # Selected deterministically here — and reused below when the full
         # Itinerary is assembled — so the numbers shown to the traveller and
@@ -399,12 +473,12 @@ def build_itinerary_node(provider: TravelProvider, llm: LLM, max_retries: int):
         return_flight = _booked_flight(
             flight_results.get("return_options", []), rationale, on=request.end_date
         )
-        lodging = _lodging_options(state["hotel_results"].get("options", []))
+        stays = state["hotel_results"].get("stays") or _stays_for(request, _route_stops(state))
 
         flight_cost = (outbound_flight.total or 0 if outbound_flight else 0) + (
             return_flight.total or 0 if return_flight else 0
         )
-        hotel_cost = lodging[0].total or 0 if lodging else 0
+        hotel_cost = sum(stay.booked.total or 0 for stay in stays if stay.booked)
 
         if not request.include_flights:
             flight_note = (
@@ -416,37 +490,49 @@ def build_itinerary_node(provider: TravelProvider, llm: LLM, max_retries: int):
         elif outbound_flight is None and return_flight is None:
             flight_note = "No flight fares were found, so no flight is included in the cost below."
         else:
+            legs = [
+                f"{name}: {_leg_words(leg)}"
+                for name, leg in (("Outbound", outbound_flight), ("Return", return_flight))
+                if leg
+            ]
             flight_note = (
-                f"Flights already booked: Rs {flight_cost:,.0f} total. "
-                "Do not plan or re-cost the flight yourself."
+                f"Flights already booked ({'; '.join(legs)}): Rs {flight_cost:,.0f} total. "
+                "Do not plan or re-cost the flights yourself."
             )
         if not request.include_hotels:
             hotel_note = (
-                "The traveller didn't ask for a hotel, so no lodging is included in the cost "
-                "below. Don't plan or cost one yourself."
+                "The traveller didn't ask for hotels, so no lodging is included in the cost "
+                "below. Don't plan or cost any yourself."
             )
-        elif lodging:
+        elif any(stay.booked for stay in stays):
             hotel_note = (
-                f"Hotel already booked: {lodging[0].name}, Rs {hotel_cost:,.0f} total. "
+                f"Hotels already booked, one per town (above): Rs {hotel_cost:,.0f} total. "
                 "Do not plan or re-cost lodging yourself."
             )
         else:
-            hotel_note = "No lodging options were found."
+            hotel_note = "No hotel options were found."
 
-        # Handed over pre-computed, not left for the model to derive from
-        # start/end dates — asking it to count calendar days itself invites
-        # exactly the off-by-one mistake parse_itinerary's validation exists
-        # to catch (seen live: a 5-day trip came back with 4 `days` entries,
-        # three attempts running, feedback notwithstanding).
-        trip_dates = [d.isoformat() for d in request.dates]
+        route = "\n".join(
+            f"- {stay.city}: {stay.nights} night(s), {stay.check_in.isoformat()} to "
+            f"{stay.check_out.isoformat()}"
+            + (f"; hotel: {stay.booked.name}" if stay.booked else "")
+            for stay in stays
+        )
 
+        # Dates handed over pre-computed, not left for the model to derive
+        # from start/end dates — asking it to count calendar days itself
+        # invites exactly the off-by-one mistake parse_itinerary's validation
+        # exists to catch (seen live: a 5-day trip came back with 4 `days`
+        # entries, three attempts running, feedback notwithstanding). The
+        # town for each date likewise.
         base_prompt = (
             f"{describe_request(request)}\n"
             f"Destination: {destination}\n\n"
-            f"Weather outlook: {json.dumps(weather, default=str)}\n\n"
+            f"Route, fixed (plan the days around it):\n{route}\n"
+            f"Each day's `city`, by date. Use exactly these: "
+            f"{json.dumps(_base_by_date(request, stays))}\n\n"
             f"{flight_note}\n"
             f"{hotel_note}\n\n"
-            f"Candidate attractions: {json.dumps(attractions, default=str)}\n\n"
             f"`days` must have exactly one entry for each of these {len(trip_dates)} dates, "
             f"in this order — do not compute the date range yourself: "
             f"{json.dumps(trip_dates)}"
@@ -487,14 +573,14 @@ def build_itinerary_node(provider: TravelProvider, llm: LLM, max_retries: int):
             return_flight=return_flight,
             outbound_options=_flight_options(flight_results.get("outbound_options", [])),
             return_options=_flight_options(flight_results.get("return_options", [])),
-            lodging_options=lodging,
             outbound_source=flight_results.get("outbound_source"),
             return_source=flight_results.get("return_source"),
-            lodging_source=state["hotel_results"].get("source"),
+            stays=stays,
             days=draft.days,
             total_estimated_cost=flight_cost + hotel_cost + activity_cost,
             notes=draft.notes,
         )
+        status("itinerary", f"{len(itinerary.days)} days", state="done")
         return {
             "itinerary": itinerary,
             "messages": [
@@ -523,6 +609,7 @@ def build_final_response_node(llm: LLM):
             system=FINAL_RESPONSE_AGENT_SYSTEM,
             user=f"Itinerary: {itinerary.model_dump_json()}",
         )
+        status("summary", "Written", state="done")
         return {
             "final_response": summary.strip(),
             "messages": ["final_response_agent: wrote the trip summary"],
@@ -540,6 +627,13 @@ def build_package_trip_node():
         if itinerary is None:
             reason = "; ".join(state.get("errors") or []) or "no reason recorded"
             raise PlanningError(f"the agent pipeline did not produce an itinerary: {reason}")
+
+        # What comes next on the page: places in each city, or nothing.
+        kind = state["request"].places_per_city
+        if kind:
+            status("restaurants", f"Finding {kind} in each city…")
+        else:
+            status("restaurants", "Not requested", state="skipped")
 
         # `id` identifies this version; `thread_id` is what a later revision
         # is addressed to, and is the same value here only because nothing

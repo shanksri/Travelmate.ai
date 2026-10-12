@@ -1,12 +1,12 @@
 import pytest
-from conftest import FakeLLM, draft_itinerary_json
+from conftest import FakeLLM, draft_itinerary_json, route_json
 
 from app.agent.planner import PlanningError, plan_trip
 from app.agent.prompts import (
     FINAL_RESPONSE_AGENT_SYSTEM,
     FLIGHT_AGENT_SYSTEM,
-    HOTEL_AGENT_SYSTEM,
     ITINERARY_AGENT_SYSTEM,
+    ROUTE_PLAN_SYSTEM,
 )
 from app.core.config import Settings
 
@@ -21,8 +21,8 @@ def happy_path_llm(trip_request) -> FakeLLM:
     in parallel by the graph — happens to call first."""
     return FakeLLM(
         by_system={
+            ROUTE_PLAN_SYSTEM: [route_json(("Lisbon", trip_request.nights))],
             FLIGHT_AGENT_SYSTEM: ["Meridian Air — cheapest, no stops."],
-            HOTEL_AGENT_SYSTEM: ["The Ardent House — best rated."],
             ITINERARY_AGENT_SYSTEM: [draft_itinerary_json(trip_request)],
             FINAL_RESPONSE_AGENT_SYSTEM: ["Four easy, food-forward days in Lisbon."],
         }
@@ -41,7 +41,7 @@ def test_plan_trip_runs_the_full_agent_graph(provider, trip_request, settings):
     # not just into the prompt the itinerary agent saw.
     assert trip.itinerary.outbound_flight is not None
     assert trip.itinerary.return_flight is not None
-    assert len(trip.itinerary.lodging_options) > 0
+    assert trip.itinerary.stays and all(s.options for s in trip.itinerary.stays)
     assert trip.itinerary.total_estimated_cost > 0
     assert any("flight_agent" in m for m in trip.agent_trace)
     assert any("hotel_agent" in m for m in trip.agent_trace)
@@ -170,8 +170,8 @@ def test_plan_trip_raises_when_the_itinerary_agent_never_recovers(
 ):
     llm = FakeLLM(
         by_system={
+            ROUTE_PLAN_SYSTEM: [route_json(("Lisbon", trip_request.nights))],
             FLIGHT_AGENT_SYSTEM: ["Meridian Air."],
-            HOTEL_AGENT_SYSTEM: ["The Ardent House."],
             ITINERARY_AGENT_SYSTEM: ["nope", "still nope", "nope again"],
         }
     )

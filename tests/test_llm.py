@@ -148,7 +148,7 @@ def test_the_itinerary_agent_sends_its_schema(provider, trip_request):
     from app.agent.state import initial_state
 
     llm = FakeLLM(responses=[draft_itinerary_json(trip_request)])
-    node = build_itinerary_node(provider, llm, max_retries=0)
+    node = build_itinerary_node(llm, max_retries=0)
     state = initial_state(trip_request) | {
         "resolved_destination": "Lisbon, Portugal",
         "flight_results": {},

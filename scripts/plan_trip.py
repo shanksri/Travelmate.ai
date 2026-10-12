@@ -85,21 +85,25 @@ def render(trip: PlannedTrip) -> str:
         lines.append("  (none — no origin was given, or no fares were found)")
     lines.append("")
 
-    if it.lodging_options:
+    if any(stay.options for stay in it.stays):
         lines.append("Where to stay (* = selected):")
-        for i, hotel in enumerate(it.lodging_options):
-            marker = "*" if i == 0 else " "
-            bits = [hotel.tier] if hotel.tier else []
-            if hotel.rating is not None:
-                bits.append(f"{hotel.rating} rating")
-            tag = f" ({', '.join(bits)})" if bits else ""
-            cost = (
-                f" — {_money(hotel.nightly, it.currency)}/night, "
-                f"{_money(hotel.total, it.currency)} total"
-                if hotel.nightly is not None and hotel.total is not None
-                else ""
-            )
-            lines.append(f"  {marker} {hotel.name}{tag}{cost}")
+        for stay in it.stays:
+            lines.append(f"  {stay.city}, {stay.nights} night(s) from {stay.check_in}:")
+            if not stay.options:
+                lines.append("      (none found)")
+            for i, hotel in enumerate(stay.options):
+                marker = "*" if i == 0 else " "
+                bits = [hotel.tier] if hotel.tier else []
+                if hotel.rating is not None:
+                    bits.append(f"{hotel.rating} rating")
+                tag = f" ({', '.join(bits)})" if bits else ""
+                cost = (
+                    f" — {_money(hotel.nightly, it.currency)}/night, "
+                    f"{_money(hotel.total, it.currency)} total"
+                    if hotel.nightly is not None and hotel.total is not None
+                    else ""
+                )
+                lines.append(f"    {marker} {hotel.name}{tag}{cost}")
         lines.append("")
 
     lines.append("Day by day:")

@@ -81,6 +81,11 @@ class OpenAILLM:
         self._temperature = temperature
         self._max_tokens = max_tokens
 
+    def with_model(self, model: str) -> "OpenAILLM":
+        """The same client and settings on another model, for the one step
+        that needs a stronger one (the route planner)."""
+        return OpenAILLM(self._client, model, self._temperature, self._max_tokens)
+
     def _request(
         self, system: str, user: str, json_mode: bool, schema: type[BaseModel] | None
     ) -> dict:

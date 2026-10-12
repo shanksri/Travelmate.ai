@@ -3,7 +3,7 @@
 Searches go through SerpApi's MCP `search` tool with `engine=google_hotels`
 (app/providers/serpapi.py) on a second SerpApi account, `SERPAPI_HOTEL_API_KEY`,
 so hotel searches don't eat into the flights account's quota. One search per
-trip; repeats within `flight_cache_ttl_hours` come from the shared search
+town on the route; repeats within `flight_cache_ttl_hours` come from the shared search
 cache under their own key prefix.
 
 The planner calls `search_hotels_with_source`, which runs the same retry and
@@ -16,15 +16,24 @@ Google Maps (places) is deliberately *not* a fallback here, though it was
 in the first sketch: Google's terms for Maps Grounding Lite forbid storing
 its results, and hotels are saved with every trip.
 
-Which hotels are offered: priced ones rated at least `MIN_RATING`, cheapest
-first, at most `MAX_OPTIONS`. The planner books the first (cheapest) by
-default, as it always has; the rating floor keeps "cheapest" from meaning a
-poorly reviewed place, and "a better rated hotel" in a revision can switch
-among the rest.
+Which hotels are offered: hotels of `MIN_CLASS` stars or more, rated at
+least `MIN_RATING`, cheapest first, at most `MAX_OPTIONS`. The planner books
+the first (cheapest), and "a better rated hotel" in a revision can switch
+among the rest. The star floor is asked of Google (`hotel_class`) and
+checked again here: before it, "cheapest rated 3.5+" meant student hostels
+and homestay rooms (seen live, Kerala, 2026-10-12), since a hostel can be
+well reviewed and has no star class. Holiday rentals are left out too, and
+so are places Google files as 3-star hotels but whose own name says hostel
+or homestay ("The Hosteller Fort Kochi" at ₹565 a night was a dorm bed).
+A rating also needs `MIN_REVIEWS` behind it to count.
+
+One search covers one town and one run of nights, so a multi-town trip
+searches each town separately (app/agent/nodes.py, `hotel_agent`).
 """
 
 import logging
 import os
+import re
 from datetime import date, timedelta
 from typing import Any
 from urllib.parse import urlencode
@@ -48,7 +57,12 @@ logger = logging.getLogger(__name__)
 
 PROVIDER = "Google Hotels"
 MIN_RATING = 3.5
+MIN_CLASS = 3
+MIN_REVIEWS = 50
 MAX_OPTIONS = 5
+
+# Names that say it isn't a hotel room, whatever class Google gives it.
+NOT_A_HOTEL = re.compile(r"hostel|home ?stay|dorm|backpacker", re.IGNORECASE)
 
 breaker = CircuitBreaker("Google Hotels")
 
@@ -82,6 +96,10 @@ def _live_search(
         "check_in_date": check_in.isoformat(),
         "check_out_date": check_out.isoformat(),
         "adults": str(adults),
+        # Hotels of MIN_CLASS stars or more, rated 3.5+, cheapest first.
+        "hotel_class": ",".join(str(c) for c in range(MIN_CLASS, 6)),
+        "rating": "7",
+        "sort_by": "3",
         "currency": "INR",
         "gl": "in",
         "hl": "en",
@@ -103,7 +121,8 @@ def _live_search(
 def normalize_hotels(raw: dict) -> list[dict[str, Any]]:
     """Google Hotels properties in the lodging-option shape the rest of the
     app uses (`LodgingOption(**option)`): priced, rated at least
-    `MIN_RATING`, cheapest first, at most `MAX_OPTIONS`.
+    `MIN_RATING`, hotels of `MIN_CLASS` stars or more, cheapest first, at
+    most `MAX_OPTIONS`.
 
     `rating` is Google's 0-5 stars. `total` is Google's price for the whole
     stay for the party searched, not a nightly price times nights.
@@ -116,6 +135,12 @@ def normalize_hotels(raw: dict) -> list[dict[str, Any]]:
         if not prop.get("name") or nightly is None or total is None:
             continue
         if rating is None or rating < MIN_RATING:
+            continue
+        if prop.get("type", "hotel") != "hotel":
+            continue  # a holiday rental or homestay room
+        if (prop.get("extracted_hotel_class") or 0) < MIN_CLASS:
+            continue  # below 3 stars, or no class at all, like a hostel
+        if NOT_A_HOTEL.search(prop["name"]) or (prop.get("reviews") or 0) < MIN_REVIEWS:
             continue
         options.append(
             {
@@ -141,7 +166,8 @@ def search_hotels_with_source(
     raw, source = fetch_with_fallback(
         cache=get_flight_cache(),
         cache_key=(
-            f"google_hotels:v1:{destination.strip().lower()}:"
+            # v2: with the star filter. A v1 search kept hostels.
+            f"google_hotels:v2:{destination.strip().lower()}:"
             f"{check_in.isoformat()}:{check_out.isoformat()}:{adults}"
         ),
         live=lambda: _live_search(destination, check_in, check_out, adults, None),

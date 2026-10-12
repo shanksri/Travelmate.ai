@@ -216,6 +216,51 @@ class DataSource(BaseModel):
     link: str | None = None
 
 
+class RouteStop(BaseModel):
+    """One town the trip sleeps in, for a run of nights."""
+
+    city: str = Field(
+        description="The town's common official name, e.g. 'Thiruvananthapuram', not 'Trivandrum'."
+    )
+    area: str = Field(description="Its state or region and country, e.g. 'Kerala, India'.")
+    nights: int = Field(ge=0)
+
+
+class RoutePlan(BaseModel):
+    """Where the trip sleeps and which airports it uses, decided before any
+    search: flights go to `fly_into` and leave from `fly_out_of`, and each
+    stop gets its own hotel search for its own dates."""
+
+    stops: list[RouteStop]
+    fly_into: str | None = Field(
+        description="The city whose airport the traveller arrives at; null if no flights."
+    )
+    fly_out_of: str | None = Field(
+        description="The city whose airport the traveller leaves from; null if no flights."
+    )
+    reasoning: str
+
+
+class HotelStay(BaseModel):
+    """The nights spent in one town: where, when, and the hotels found there.
+    The first option is the booked one."""
+
+    city: str
+    check_in: date
+    nights: int = Field(ge=0)
+    options: list[LodgingOption] = Field(default_factory=list)
+    # Where `options` came from; None when hotels weren't searched.
+    source: DataSource | None = None
+
+    @property
+    def check_out(self) -> date:
+        return self.check_in + timedelta(days=self.nights)
+
+    @property
+    def booked(self) -> LodgingOption | None:
+        return self.options[0] if self.options else None
+
+
 class Itinerary(BaseModel):
     destination: str
     start_date: date
@@ -228,16 +273,46 @@ class Itinerary(BaseModel):
     # `return_flight` above remain the one actually selected and costed.
     outbound_options: list[FlightLeg] = Field(default_factory=list)
     return_options: list[FlightLeg] = Field(default_factory=list)
-    lodging_options: list[LodgingOption] = Field(default_factory=list)
     # Where each of the above came from. None when that part wasn't searched
     # (its box unticked, no origin) and on trips planned before these existed.
     outbound_source: DataSource | None = None
     return_source: DataSource | None = None
-    lodging_source: DataSource | None = None
+    # The route, one entry per town slept in, in order, each with its own
+    # hotels. Empty on trips planned before routes existed and had no hotel.
+    stays: list[HotelStay] = Field(default_factory=list)
     days: list[DayPlan]
     currency: str = DEFAULT_CURRENCY
     total_estimated_cost: float | None = Field(default=None, ge=0)
     notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_hotel_list_is_one_stay(cls, data: object) -> object:
+        """Trips planned before routes had one hotel list for the whole trip
+        (`lodging_options`, `lodging_source`). That's one stay at the
+        destination for every night, which is how it was searched."""
+        if not isinstance(data, dict) or "stays" in data:
+            return data
+        data = dict(data)
+        options = data.pop("lodging_options", None) or []
+        source = data.pop("lodging_source", None)
+        if options or source:
+            start = date.fromisoformat(str(data["start_date"]))
+            end = date.fromisoformat(str(data["end_date"]))
+            data["stays"] = [
+                {
+                    "city": data.get("destination", ""),
+                    "check_in": start,
+                    "nights": (end - start).days,
+                    "options": options,
+                    "source": source,
+                }
+            ]
+        return data
+
+    @property
+    def hotel_cost(self) -> float:
+        return sum((stay.booked.total or 0) for stay in self.stays if stay.booked)
 
 
 class PlannedTrip(BaseModel):

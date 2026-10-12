@@ -2,11 +2,14 @@
 
 The trip graph plans one trip from a `TripRequest`:
 
-    START -> resolve_destination -> [flight_agent, hotel_agent] (parallel)
+    START -> resolve_destination -> plan_route
+          -> [flight_agent, hotel_agent] (parallel)
           -> itinerary_agent -> final_response_agent -> package_trip -> END
 
 `resolve_destination` only does real work when the traveller left the
-destination open; flight and hotel search run in parallel since neither
+destination open. `plan_route` decides the towns slept in and the airports
+(app/agent/route_plan.py), so flights search real airports and hotels are
+searched per town. Flight and hotel search run in parallel since neither
 depends on the other, then join into the itinerary agent, which needs both.
 `package_trip` turns the result into a saveable `PlannedTrip`.
 
@@ -47,24 +50,31 @@ from app.agent.nodes import (
     build_package_trip_node,
     build_resolve_destination_node,
 )
+from app.agent.route_plan import build_route_plan_node
 from app.agent.state import AskState, TravelState
 from app.providers.base import TravelProvider
 
 
 def _add_trip_steps(
-    graph: StateGraph, provider: TravelProvider, llm: LLM, max_itinerary_retries: int
+    graph: StateGraph,
+    provider: TravelProvider,
+    llm: LLM,
+    max_itinerary_retries: int,
+    route_model: str | None,
 ) -> None:
     """resolve_destination … package_trip, wired together. The caller wires
     what leads into `resolve_destination` and out of `package_trip`."""
     graph.add_node("resolve_destination", build_resolve_destination_node(provider))
+    graph.add_node("plan_route", build_route_plan_node(provider, llm, route_model))
     graph.add_node("flight_agent", build_flight_node(provider, llm))
-    graph.add_node("hotel_agent", build_hotel_node(provider, llm))
-    graph.add_node("itinerary_agent", build_itinerary_node(provider, llm, max_itinerary_retries))
+    graph.add_node("hotel_agent", build_hotel_node(provider))
+    graph.add_node("itinerary_agent", build_itinerary_node(llm, max_itinerary_retries))
     graph.add_node("final_response_agent", build_final_response_node(llm))
     graph.add_node("package_trip", build_package_trip_node())
 
-    graph.add_edge("resolve_destination", "flight_agent")
-    graph.add_edge("resolve_destination", "hotel_agent")
+    graph.add_edge("resolve_destination", "plan_route")
+    graph.add_edge("plan_route", "flight_agent")
+    graph.add_edge("plan_route", "hotel_agent")
     graph.add_edge("flight_agent", "itinerary_agent")
     graph.add_edge("hotel_agent", "itinerary_agent")
     graph.add_edge("itinerary_agent", "final_response_agent")
@@ -72,17 +82,23 @@ def _add_trip_steps(
 
 
 def build_planner_graph(
-    provider: TravelProvider, llm: LLM, max_itinerary_retries: int = 2
+    provider: TravelProvider,
+    llm: LLM,
+    max_itinerary_retries: int = 2,
+    route_model: str | None = None,
 ) -> CompiledStateGraph:
     graph = StateGraph(TravelState)
-    _add_trip_steps(graph, provider, llm, max_itinerary_retries)
+    _add_trip_steps(graph, provider, llm, max_itinerary_retries, route_model)
     graph.add_edge(START, "resolve_destination")
     graph.add_edge("package_trip", END)
     return graph.compile()
 
 
 def build_ask_graph(
-    provider: TravelProvider, llm: LLM, max_itinerary_retries: int = 2
+    provider: TravelProvider,
+    llm: LLM,
+    max_itinerary_retries: int = 2,
+    route_model: str | None = None,
 ) -> CompiledStateGraph:
     graph = StateGraph(AskState)
 
@@ -90,7 +106,7 @@ def build_ask_graph(
     graph.add_node("places", build_places_node())
     graph.add_node("route", build_route_node())
     graph.add_node("prepare_trip", build_prepare_trip_node())
-    _add_trip_steps(graph, provider, llm, max_itinerary_retries)
+    _add_trip_steps(graph, provider, llm, max_itinerary_retries, route_model)
     graph.add_node("city_places", build_city_places_node())
 
     graph.add_edge(START, "interpret")

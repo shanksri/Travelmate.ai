@@ -4,7 +4,7 @@ Deliberately *not* the five-node planning graph. A revision first routes the
 change (ROUTE_CHANGE_SYSTEM) to the parts it's about — the outbound flight,
 the return flight, the hotel, the day plan — and then touches only those:
 
-- Flights and the hotel are re-picked from the options the original search
+- Flights and hotels are re-picked from the options the original search
   already found, by index. Nothing is searched again (no SerpApi quota), and
   nothing is typed by a model, so a new pick can't be hallucinated.
 - The day plan is re-generated only when the change is about it, with
@@ -44,8 +44,8 @@ from app.core.config import Settings, get_settings
 from app.models.itinerary import (
     DayPlan,
     FlightLeg,
+    HotelStay,
     Itinerary,
-    LodgingOption,
     PlannedTrip,
     TripRequest,
     draft_itinerary_for,
@@ -95,6 +95,14 @@ def _build_llm(settings: Settings) -> LLM:
 # --- routing -----------------------------------------------------------------
 
 
+class HotelPick(BaseModel):
+    """Switch one town's hotel: `stay` indexes the trip's stays, `option`
+    that stay's own options."""
+
+    stay: int
+    option: int
+
+
 class ChangeRoute(BaseModel):
     """Which parts of the trip a change is about, as ROUTE_CHANGE_SYSTEM
     decides them. Indexes point into the trip's existing option lists."""
@@ -103,7 +111,7 @@ class ChangeRoute(BaseModel):
 
     outbound: int | None = None
     return_leg: int | None = Field(default=None, alias="return")
-    hotel: int | None = None
+    hotels: list[HotelPick] = Field(default_factory=list)
     itinerary: str | None = None
     declined: str | None = None
     reasoning: str = ""
@@ -134,21 +142,32 @@ def _flight_menu(options: list[FlightLeg], booked: FlightLeg | None) -> list[dic
     ]
 
 
-def _hotel_menu(options: list[LodgingOption]) -> list[dict] | str:
-    if not options:
+def _hotel_menu(stays: list[HotelStay]) -> list[dict] | str:
+    """One entry per town slept in, each with its own options."""
+    if not any(stay.options for stay in stays):
         return "none: the traveller planned this trip without a hotel"
     return [
         {
-            "index": i,
-            "name": h.name,
-            "tier": h.tier,
-            "rating": h.rating,
-            "neighbourhood": h.neighbourhood,
-            "nightly": h.nightly,
-            "total": h.total,
-            "selected": i == 0,
+            "stay": i,
+            "city": stay.city,
+            "check_in": stay.check_in.isoformat(),
+            "nights": stay.nights,
+            "options": [
+                {
+                    "index": j,
+                    "name": h.name,
+                    "tier": h.tier,
+                    "rating": h.rating,
+                    "neighbourhood": h.neighbourhood,
+                    "nightly": h.nightly,
+                    "total": h.total,
+                    "selected": j == 0,
+                }
+                for j, h in enumerate(stay.options)
+            ]
+            or "none found",
         }
-        for i, h in enumerate(options)
+        for i, stay in enumerate(stays)
     ]
 
 
@@ -157,10 +176,18 @@ def _check_indexes(route: ChangeRoute, itinerary: Itinerary) -> str | None:
     for name, index, options in (
         ("outbound", route.outbound, itinerary.outbound_options),
         ("return", route.return_leg, itinerary.return_options),
-        ("hotel", route.hotel, itinerary.lodging_options),
     ):
         if index is not None and not 0 <= index < len(options):
             return f"`{name}` is {index}, but there are only {len(options)} {name} option(s)."
+    for pick in route.hotels:
+        if not 0 <= pick.stay < len(itinerary.stays):
+            return f"`hotels` names stay {pick.stay}, but there are only {len(itinerary.stays)}."
+        stay = itinerary.stays[pick.stay]
+        if not 0 <= pick.option < len(stay.options):
+            return (
+                f"`hotels` names option {pick.option} in {stay.city}, which has only "
+                f"{len(stay.options)} option(s)."
+            )
     return None
 
 
@@ -176,7 +203,7 @@ def _route_change(
         "change_request": change_request,
         "outbound_options": _flight_menu(itinerary.outbound_options, itinerary.outbound_flight),
         "return_options": _flight_menu(itinerary.return_options, itinerary.return_flight),
-        "hotel_options": _hotel_menu(itinerary.lodging_options),
+        "hotel_options": _hotel_menu(itinerary.stays),
         "days": [
             {"day": d.day, "date": d.date.isoformat(), "summary": d.summary}
             for d in itinerary.days
@@ -333,10 +360,11 @@ def _what_changed(before: Itinerary, after: Itinerary) -> tuple[list[str], list[
         if (old_leg or new_leg) and not _same_flight(old_leg, new_leg):
             changes.append(f"{name}: {_flight_words(old_leg)} became {_flight_words(new_leg)}")
 
-    old_hotel = before.lodging_options[0].name if before.lodging_options else None
-    new_hotel = after.lodging_options[0].name if after.lodging_options else None
-    if old_hotel != new_hotel:
-        changes.append(f"Hotel: {old_hotel} became {new_hotel}")
+    for old_stay, new_stay in zip(before.stays, after.stays, strict=False):
+        old_hotel = old_stay.booked.name if old_stay.booked else None
+        new_hotel = new_stay.booked.name if new_stay.booked else None
+        if old_hotel != new_hotel:
+            changes.append(f"Hotel in {old_stay.city}: {old_hotel} became {new_hotel}")
     return changes, days_before
 
 
@@ -390,7 +418,7 @@ class RevisionState(TypedDict, total=False):
     route: ChangeRoute | None
     outbound: FlightLeg | None
     return_flight: FlightLeg | None
-    lodging: list[LodgingOption]
+    stays: list[HotelStay]
     days: list[DayPlan]
     notes: list[str]
     trace: list[str]
@@ -410,7 +438,7 @@ def _new_change(previous: PlannedTrip, change_request: str) -> RevisionState:
         "route": None,
         "outbound": None,
         "return_flight": None,
-        "lodging": [],
+        "stays": [],
         "days": [],
         "notes": [],
         "trace": [],
@@ -423,7 +451,7 @@ def _has_nothing_to_repick(itinerary: Itinerary) -> bool:
     return (
         not itinerary.outbound_options
         and not itinerary.return_options
-        and not itinerary.lodging_options
+        and not any(stay.options for stay in itinerary.stays)
     )
 
 
@@ -439,7 +467,7 @@ def _build_route_change_node(llm: LLM, attempts: int):
         start = {
             "outbound": itinerary.outbound_flight,
             "return_flight": itinerary.return_flight,
-            "lodging": list(itinerary.lodging_options),
+            "stays": list(itinerary.stays),
             "days": itinerary.days,
             "notes": itinerary.notes,
         }
@@ -490,14 +518,19 @@ def _build_apply_picks_node():
                 update["return_flight"] = _rebooked(pick, change_request)
                 trace.append(f"flights: return rebooked to option {route.return_leg}")
 
-        # The first lodging option is the selected one everywhere (the
-        # itinerary node's cost, the page's "Selected" tag), so switching
-        # means moving it to the front.
-        if route.hotel:
-            lodging = list(state["lodging"])
-            lodging.insert(0, lodging.pop(route.hotel))
-            update["lodging"] = lodging
-            trace.append(f"hotel: switched to {lodging[0].name}")
+        # A stay's first option is the selected one everywhere (the cost, the
+        # page's "Selected" tag), so switching means moving it to the front.
+        stays = list(state["stays"])
+        for pick in route.hotels:
+            if pick.option == 0:
+                continue  # already the booked one
+            stay = stays[pick.stay]
+            options = list(stay.options)
+            options.insert(0, options.pop(pick.option))
+            stays[pick.stay] = stay.model_copy(update={"options": options})
+            trace.append(f"hotel: {stay.city} switched to {options[0].name}")
+        if stays != state["stays"]:
+            update["stays"] = stays
         return update
 
     return node
@@ -532,12 +565,12 @@ def _build_package_revision_node(llm: LLM):
         previous = state["previous"]
         itinerary = previous.itinerary
         outbound, return_flight = state["outbound"], state["return_flight"]
-        lodging, days = state["lodging"], state["days"]
+        stays, days = state["stays"], state["days"]
 
         flight_cost = (outbound.total or 0 if outbound else 0) + (
             return_flight.total or 0 if return_flight else 0
         )
-        hotel_cost = lodging[0].total or 0 if lodging else 0
+        hotel_cost = sum(stay.booked.total or 0 for stay in stays if stay.booked)
         activity_cost = sum(
             activity.estimated_cost or 0 for day in days for activity in day.activities
         )
@@ -550,10 +583,9 @@ def _build_package_revision_node(llm: LLM):
             return_flight=return_flight,
             outbound_options=itinerary.outbound_options,
             return_options=itinerary.return_options,
-            lodging_options=lodging,
             outbound_source=itinerary.outbound_source,
             return_source=itinerary.return_source,
-            lodging_source=itinerary.lodging_source,
+            stays=stays,
             days=days,
             currency=itinerary.currency,
             total_estimated_cost=flight_cost + hotel_cost + activity_cost,

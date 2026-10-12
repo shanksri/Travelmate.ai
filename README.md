@@ -14,10 +14,13 @@ Every request runs as a LangGraph graph (`app/agent/graph.py`,
  prompt ──▶ interpret ──┬──▶ places ─────────────────────────────────────▶ end
  (+ page    (one LLM    ├──▶ route ──────────────────────────────────────▶ end
   choices)   call)      └──▶ prepare_trip ──▶ resolve_destination
+                                                     ▼
+                                                plan_route   (gpt-4o: towns, nights, airports)
                                                      │
                                        ┌─────────────┴─────────────┐
                                        ▼                           ▼
-                                  flight_agent                hotel_agent      (parallel)
+                                  flight_agent                hotel_agent      (parallel;
+                                (first/last airport)       (one search per town) no LLM)
                                        └─────────────┬─────────────┘
                                                      ▼
                                               itinerary_agent   (streams each day)
@@ -30,7 +33,23 @@ Every request runs as a LangGraph graph (`app/agent/graph.py`,
 ```
 
 `POST /trips/plan` and the CLI run the trip steps alone (resolve_destination
-… package_trip). Revisions are a graph too: route_change → apply_picks →
+… package_trip).
+
+**The route comes first.** `plan_route` (`app/agent/route_plan.py`, on
+`TRAVELMATE_ROUTE_MODEL`, gpt-4o) decides the towns the trip sleeps in, the
+nights in each (at most 4 towns), and the airports to fly into and out of,
+before anything is searched. Code checks the answer (the nights add up, the
+airports exist) and sends it back with the reason if not. Then:
+
+- flights search into the first airport and out of the last, which needn't
+  be the same one;
+- each town gets its own hotel search for its own nights, all at once;
+- the itinerary agent writes the days around the fixed route: it's told the
+  town for every date, the booked flight times, and each town's hotel.
+
+Before this, "Kerala and Tamil Nadu" was searched as typed: it isn't an
+airport, so there were no flights, and one hotel search across two states
+returned hostels in towns the trip never visited. Revisions are a graph too: route_change → apply_picks →
 revise_days (only when the days change) → package_revision → remember, with
 any step able to end it with a reason.
 
@@ -54,7 +73,11 @@ then listens to `GET /jobs/{id}/events` (Server-Sent Events). The job runs
 the ask graph on a server thread (`app/jobs.py`) and records each step as it
 happens:
 
-- status lines, then flights and hotels as they're found;
+- each step starting and finishing (`status` events with a stage and a
+  state: active, done, skipped or warn), which the page draws as a step
+  list: "Choosing the cities and nights — Kochi 4 nights → Madurai 3 →
+  Thiruvananthapuram 2", "Searching hotels — Kochi 5 · Madurai 5 · …";
+- the route, then flights and hotels as they're found;
 - each day the moment the AI finishes writing it (the itinerary LLM call
   streams, and `app/agent/stream_json.py` picks finished days out of the
   partial JSON);
@@ -276,6 +299,7 @@ loop for a tea house while leaving the newly added day-3 activity in place.
 | `app/agent/itinerary_json.py` | Parses and Pydantic-validates the itinerary agent's JSON |
 | `app/agent/prompt_parser.py` | Turns one free-text sentence into a `TripRequest` — what powers the frontend's single prompt box |
 | `app/agent/planner.py` | `plan_trip()` / `plan_trip_from_prompt()` — build the graph, invoke it, map the result to a `PlannedTrip` |
+| `app/agent/route_plan.py` | `plan_route()` — the towns slept in, nights in each, and airports, decided before any search |
 | `app/agent/reviser.py` | `revise_trip()` — routes one requested change to the flights, hotel and/or day plan of an existing trip, and applies only those; remembers earlier changes to the trip |
 | `app/agent/memory.py` | `get_checkpointer()` — where LangGraph keeps the revision agent's memory between requests (Postgres, or in process for tests) |
 | `app/agent/assistant.py` | `answer_prompt()` — behind `POST /ask`: plans a trip, or answers a places or route request from Google Maps |
@@ -316,8 +340,9 @@ no third-party keys and the tests never touch a network.
 
 `TRAVELMATE_PROVIDER=live` serves **live flight fares from Google Flights** and
 **live hotel prices from Google Hotels**, both via SerpApi's hosted MCP
-server, each through the retry and fallback chain below, and mock data for
-everything else: attractions and weather still have no real source. Needs
+server, each through the retry and fallback chain below. Attractions and
+weather have no real source yet, and the planner no longer uses the sample
+ones: the itinerary agent draws on its own knowledge of each town. Needs
 `SERPAPI_FLIGHTS_API_KEY` and `SERPAPI_HOTEL_API_KEY` (two SerpApi accounts,
 each with its own 250-a-month quota).
 
@@ -441,14 +466,19 @@ mistaken for real fares twice.
 
 ### Live hotel prices (`TRAVELMATE_PROVIDER=live`)
 
-`app/providers/google_hotels.py` runs one Google Hotels search per trip
-(`engine=google_hotels`) for the destination, the stay's dates and the party
-size, priced in rupees, on the hotel account (`SERPAPI_HOTEL_API_KEY`).
+`app/providers/google_hotels.py` runs one Google Hotels search per town on
+the route (`engine=google_hotels`), for that town's nights and the party
+size, priced in rupees, on the hotel account (`SERPAPI_HOTEL_API_KEY`). A
+10-day, 3-town trip is 3 searches, made at the same time.
 
-- **What's offered:** priced hotels rated at least 3.5★ on Google, cheapest
-  first, at most 5. The first is booked by default, the same rule as before:
-  the rating floor keeps "cheapest" from meaning a poorly reviewed place, and
-  "a better rated hotel" in a revision switches among the rest.
+- **What's offered in each town:** hotels of 3 stars or more, rated at least
+  3.5★ by 50 or more reviewers, cheapest first, at most 5. The star and
+  rating floors are asked of Google (`hotel_class`, `rating`,
+  `sort_by`=price) and checked again in code, which also drops holiday
+  rentals and anything named a hostel or homestay: Google files some of
+  those as 3-star hotels ("The Hosteller Fort Kochi" at ₹565 a night was a
+  dorm bed). The cheapest is booked; "a better rated hotel in Kochi" in a
+  revision switches Kochi's among the rest.
 - **What's stored:** each hotel's `total` is Google's price for the whole
   stay for that party, and `rating` is Google's 0–5 stars.
 - **Fallback:** the same chain as flights (`fetch_with_fallback`), with its
@@ -640,6 +670,7 @@ Every setting is an environment variable prefixed `TRAVELMATE_`, or a line in
 |---|---|---|
 | `OPENAI_API_KEY` | — | Required (no prefix; read by the OpenAI SDK) |
 | `TRAVELMATE_MODEL` | `gpt-4o-mini` | **Must support structured outputs** (`response_format: json_schema`, strict): the parser and the itinerary agent depend on it. `gpt-4o` and `gpt-4o-mini` do. Plain `gpt-4` and `gpt-4-turbo` don't, and fail with a 400. |
+| `TRAVELMATE_ROUTE_MODEL` | `gpt-4o` | The route step only: towns, nights and airports. A few lines of output, so a fraction of a cent per trip. `gpt-4o-mini` split two-region trips unevenly and doubled back. |
 | `TRAVELMATE_REVISE_MODEL` | `gpt-4o` | Revisions only (`POST /trips/{thread_id}/revise`). Same structured-outputs requirement. `gpt-4o-mini` misjudges travel distances when fitting a new place into a route: it agreed to "3 days in Ladakh" on a Kochi trip. Costs more per call than `gpt-4o-mini`, but only when a plan is changed. |
 | `TRAVELMATE_TEMPERATURE` | `0.3` | |
 | `TRAVELMATE_MAX_TOKENS` | `16000` | Per LLM call. Deliberately generous — OpenAI bills by tokens actually generated, not this ceiling, and a longer or packed-pace itinerary can genuinely need more than a few thousand tokens. Too low and JSON mode's one failure mode (a response cut off mid-generation) starts happening under real use; see Known issues below. |

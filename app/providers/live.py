@@ -21,12 +21,16 @@ from typing import Any
 from app.models.itinerary import DataSource
 from app.providers.google_flights import search_flights_with_source
 from app.providers.google_hotels import search_hotels_with_source
+from app.providers.iata import resolve_iata
 from app.providers.mock import MockTravelProvider
 
 logger = logging.getLogger(__name__)
 
 
 class LiveTravelProvider(MockTravelProvider):
+    def has_airport(self, city: str) -> bool:
+        return resolve_iata(city) is not None
+
     def search_flights_with_source(
         self, origin: str, destination: str, depart: date, travelers: int
     ) -> tuple[list[dict[str, Any]], DataSource]:

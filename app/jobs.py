@@ -103,15 +103,11 @@ def _events_for(step: str, update: dict) -> list[dict]:
                 "return_source": results.get("return_source"),
             }
         ]
+    if step == "plan_route":
+        return [{"type": "stops", "route": update["route_plan"]}]
     if step == "hotel_agent":
         results = update.get("hotel_results") or {}
-        return [
-            {
-                "type": "hotels",
-                "options": results.get("options", []),
-                "source": results.get("source"),
-            }
-        ]
+        return [{"type": "hotels", "stays": results.get("stays", [])}]
     if step == "package_trip":
         return [{"type": "trip", "trip": update["trip"]}]
     if step == "places":
@@ -130,10 +126,11 @@ def run_ask(
     llm,
     max_itinerary_retries: int,
     save_trip: Callable,
+    route_model: str | None = None,
 ) -> None:
     """Stream the ask graph into `job`. Never raises: a failure becomes an
     `error` event, and the job always ends with `done`."""
-    graph = build_ask_graph(provider, llm, max_itinerary_retries)
+    graph = build_ask_graph(provider, llm, max_itinerary_retries, route_model)
     try:
         # subgraphs=True, or the events an agent's own subgraph emits (the
         # itinerary agent's days) never reach the stream.
@@ -181,6 +178,7 @@ def start_ask_job(prompt: str, choices: PageChoices) -> Job:
             "llm": _build_llm(settings),
             "max_itinerary_retries": settings.max_itinerary_retries,
             "save_trip": get_store().save,
+            "route_model": settings.route_model,
         },
         name=f"job-{job.id}",
         daemon=True,

@@ -21,6 +21,8 @@ def emit(event: dict) -> None:
     writer(event)
 
 
-def status(stage: str, message: str) -> None:
-    """A one-line "what's happening now" for the page's progress line."""
-    emit({"type": "status", "stage": stage, "message": message})
+def status(stage: str, message: str, state: str = "active") -> None:
+    """One step's progress, for the page's step list: `stage` names the step,
+    `state` is active, done, skipped or warn, and `message` is the line shown
+    under it ("Searching Kochi, Madurai…", "9 outbound, 5 return")."""
+    emit({"type": "status", "stage": stage, "state": state, "message": message})

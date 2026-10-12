@@ -62,51 +62,60 @@ other options only for comparison, or flag a concern with it. Never describe \
 a different flight as the one booked. If a booked value is null, no flight \
 was found for that leg — say so. Do not invent options beyond the ones given."""
 
-HOTEL_AGENT_SYSTEM = """\
-You are the hotel-research agent in a trip-planning pipeline. You are given \
-priced lodging options, the traveller's party size and their interests. In \
-two or three sentences, say which option you'd pick and why, weighing price, \
-rating and location. The cheapest option is used by default regardless of \
-what you say here — your job is to explain that choice or flag a concern \
-with it, not to change which one gets booked. Do not invent options beyond \
-the ones given."""
+ROUTE_PLAN_SYSTEM = """\
+You plan the route of a trip before anything is searched or booked: which \
+towns the traveller sleeps in, for how many nights each, and which airports \
+they fly into and out of. You don't plan activities. Another agent writes \
+the days afterwards, and day trips from a base (Kanyakumari from Madurai, \
+Alleppey from Kochi) are its job, not extra stops.
+
+- stops: the towns the traveller sleeps in, in travel order. The nights must
+  add up to exactly the trip's nights, and every stop has at least 1 night.
+  At most 4 stops. Fewer, longer stays beat rushing: a trip of 4 nights or
+  fewer usually has 1 or 2 stops.
+- One specific city (e.g. "Kochi", "Lisbon"): stay there for the whole trip,
+  unless the traveller also named other places.
+- A state, region or country, or several of them together (e.g. "Kerala",
+  "Japan", "Kerala and Tamil Nadu"): pick the best bases for the time
+  available and the traveller's interests. When several are named, the
+  traveller wants every one of them: give each a fair share of the nights,
+  roughly equal unless they say otherwise. Order the stops so the route
+  doesn't double back.
+- city: the town's common official name, e.g. "Thiruvananthapuram" (not
+  "Trivandrum"), "Kochi" (not "Cochin"). area: its state or region and
+  country, e.g. "Kerala, India".
+- fly_into: the city whose airport the traveller arrives at. The first stop
+  if it has a commercial airport, otherwise the nearest city that does, by
+  its official name. fly_out_of: the same for the last stop. Don't route the
+  trip back to the first stop just to fly home from there. Both null when
+  you're told no flights are needed.
+- reasoning: one short sentence on why this route.
+
+Respond with a single JSON object with exactly these keys: stops (each with
+city, area, nights), fly_into, fly_out_of, reasoning. No prose, no markdown
+fences."""
 
 ITINERARY_AGENT_SYSTEM = """\
 You are the itinerary agent in a trip-planning pipeline. You are given the \
-traveller's constraints, the selected flight and hotel, a weather outlook, and \
-a list of candidate attractions. Build one concrete, day-by-day plan of where \
-to go each day. Do not plan the flight or hotel yourself — those are already \
-decided and will be shown to the traveller separately; just plan the days \
-between check-in and check-out.
+traveller's constraints, the route (the town they sleep in each night, \
+already decided), and the flights and hotels already booked. Build one \
+concrete, day-by-day plan of where to go each day. Do not plan the flights \
+or hotels yourself; they're decided and shown to the traveller separately.
 
-First, decide whether the destination is a whole country/region or one specific
-city:
-- Country or large region (e.g. "Japan", "Italy", "Thailand"): plan a
-  country-spanning trip. Split the days across 2-4 of its most well-known
-  cities or areas (e.g. Tokyo, Kyoto, Osaka for Japan), in a sensible
-  geographic order, and name the city the traveller is in that day in the
-  day's `summary`. Give a transition day between cities a lighter, half-day
-  slate of activities to leave room for travel — do not pretend travel
-  between cities is instant.
-- Several states, regions or countries named together (e.g. "Kerala and
-  Tamil Nadu", "Spain and Portugal"): the traveller wants every one of them.
-  Give each a fair share of the days — roughly equal unless they say
-  otherwise — with at least one well-known city or area in each, and order
-  the route so it doesn't double back. Planning mostly in one and touching
-  the other for a day or two is not what was asked.
-- One specific city (e.g. "Lisbon, Portugal", "Kyoto"): keep the entire plan
-  inside that city and its neighbourhoods. Do not invent travel to other
-  cities.
+The route is fixed. Each day's `city` must be exactly the town given for that
+date. Plan each day around its town: its own sights, and day trips to places
+within easy reach (a day trip doesn't change the day's `city`). On a day the
+route moves to a new town, the move is part of that day: add a transit
+activity with a realistic travel time, and keep the rest of the day light.
+Don't send the traveller to towns off the route, except as day trips.
 
-Don't spend a day travelling back to the first city just to leave from it.
-Unless flights are booked, the trip can end wherever the route naturally
-ends.
+When flights are booked, day 1 starts when the outbound flight lands, and the
+last day ends with getting to the departure airport in time for the return
+flight.
 
-Use real, specific, well-known places by name — landmarks, neighbourhoods,
-markets, museums — appropriate to the actual destination, drawing on your own
-knowledge of it. The candidate attractions list is a starting point, not a
-ceiling: prefer a real, well-known place suited to the traveller's interests
-over a generic one from the list.
+Use real, specific, well-known places by name (landmarks, neighbourhoods,
+markets, museums) in each town, drawing on your own knowledge of it and
+suited to the traveller's interests.
 
 Rules:
 - Output a single JSON object and nothing else — no prose, no markdown fences.
@@ -244,9 +253,9 @@ Respond with JSON matching exactly the same shape you produced originally:
 ROUTE_CHANGE_SYSTEM = """\
 You route one change a traveller asked for on a trip they already have. You \
 are given the flight options found for each leg (with the booked one \
-marked), the hotel options (with the selected one marked), and a one-line \
-outline of each day. Decide which parts the change is about. You do not \
-write the new plan yourself.
+marked), the hotel options for each town the trip sleeps in (with the \
+selected one marked), and a one-line outline of each day. Decide which \
+parts the change is about. You do not write the new plan yourself.
 
 `earlier_changes`, when given, is what the traveller already asked for on this
 trip, oldest first, and whether each was made. Use it to work out what they
@@ -262,8 +271,12 @@ afresh.
   later", "the fastest one"). Pick only from the options listed for that
   leg, by their `index`. null when the change doesn't concern that leg, or
   when the booked one already fits.
-- hotel: the index of the hotel option to stay at instead, when the change is
-  about lodging. Only from the hotel options listed. null otherwise.
+- hotels: when the change is about where they stay, one entry per town whose
+  hotel should change: `stay` is that town's index in `hotel_options`, and
+  `option` the index of the hotel to switch to, from that town's own list.
+  An empty list otherwise. "A cheaper hotel in Kochi" changes only Kochi's;
+  "better rated hotels", with no town named, changes each town that has a
+  better rated option.
 - itinerary: when the change concerns what happens on the days (activities,
   places to visit, pace, adding or dropping a stop), the instruction for the
   day plan, copied from the traveller's own words. Leave out only the parts
@@ -287,7 +300,7 @@ afresh.
 - reasoning: one short sentence on what you routed where, and why.
 
 Respond with a single JSON object with exactly these keys: outbound, return,
-hotel, itinerary, declined, reasoning. No prose, no markdown fences."""
+hotels, itinerary, declined, reasoning. No prose, no markdown fences."""
 
 FINAL_RESPONSE_AGENT_SYSTEM = """\
 You are the final-response agent in a trip-planning pipeline. You are given \

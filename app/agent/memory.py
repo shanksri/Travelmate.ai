@@ -32,7 +32,7 @@ CHECKPOINTED_TYPES = (
     ("app.models.itinerary", "PlannedTrip"),
     ("app.models.itinerary", "DayPlan"),
     ("app.models.itinerary", "FlightLeg"),
-    ("app.models.itinerary", "LodgingOption"),
+    ("app.models.itinerary", "HotelStay"),
     ("app.agent.reviser", "ChangeRoute"),
     ("app.agent.reviser", "EditTurn"),
 )

@@ -15,15 +15,19 @@ import operator
 from datetime import date
 from typing import Annotated, Literal, TypedDict
 
-from app.models.itinerary import Itinerary, PlannedTrip, TripRequest
+from app.models.itinerary import Itinerary, PlannedTrip, RoutePlan, TripRequest
 from app.models.maps import CityPlaces, PlacesAnswer, RouteAnswer
 
 
 class TravelState(TypedDict):
     request: TripRequest
     resolved_destination: str
+    # Which towns the trip sleeps in and which airports it uses, decided
+    # before any search (app/agent/route_plan.py).
+    route_plan: RoutePlan | None
 
-    # Raw options plus each agent's short recommendation over them.
+    # Flights: raw options per leg plus the flight agent's explanation.
+    # Hotels: `stays`, one `HotelStay` per town on the route.
     flight_results: dict
     hotel_results: dict
 
@@ -44,6 +48,7 @@ def initial_state(request: TripRequest) -> TravelState:
     return TravelState(
         request=request,
         resolved_destination=request.destination or "",
+        route_plan=None,
         flight_results={},
         hotel_results={},
         itinerary=None,
@@ -88,6 +93,7 @@ def initial_ask_state(prompt: str, choices: PageChoices) -> AskState:
         prompt=prompt,
         choices=choices,
         resolved_destination="",
+        route_plan=None,
         flight_results={},
         hotel_results={},
         itinerary=None,
