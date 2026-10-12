@@ -1103,6 +1103,66 @@ page:
 - an unknown job id showed its message and cleared the URL;
 - a places request answered in 5 s.
 
+
+---
+
+## Phase 12 — Agent memory
+
+### Step 45 · Short-term memory per agent (`48aaf5d`, 2026-10-12)
+
+The first of three memory steps agreed today (see Future plans → Memory and
+caching). Each agent that iterates gets its own short-term memory, private
+to it, instead of everything living in one shared state.
+
+- **The revision agent remembers across requests.** The revision graph now
+  ends in a `remember` step on every path, made or declined. It records the
+  change in a `memory` channel:
+  - what was asked for;
+  - whether it was made;
+  - what it changed, in words ("Day 2: … became …", "Hotel: A became B");
+  - the days it replaced, exactly as they were.
+
+  The graph is compiled with a LangGraph checkpointer: `PostgresSaver` in
+  the same database (its own `checkpoint*` tables), or `InMemorySaver` in
+  tests. It is keyed by `revision:<thread_id>`. A new change's input sets
+  every other channel, so only the memory carries over. The router sees the
+  earlier changes in words. The day planner also gets the days the latest
+  change replaced, in full, which is what "undo that" needs. The window is
+  the last 6 changes.
+- **A declined change is remembered without its reason.** Step 29 showed
+  that a refusal fed back in makes the model refuse the same thing again.
+- **The itinerary agent remembers within one run.** Its retry loop became a
+  two-node subgraph (`write_days` → `check_days` → back) with private state.
+  Its memory is the list of rejection reasons, and every retry now sees all
+  of them, not just the last. It isn't checkpointed: it only matters while
+  the trip is being written.
+- **The ask graph is not checkpointed.** Its state holds Google Maps
+  results, which Google's terms don't allow storing.
+- **Streaming through a subgraph.** Probed first: without `subgraphs=True`,
+  events emitted inside a subgraph never reach the stream, so the page would
+  have lost its day-by-day preview. `app/jobs.py` now streams with it and
+  ignores steps inside subgraphs.
+- **Checkpoint type allowlist.** LangGraph warned "Deserializing
+  unregistered type … will be blocked in a future version" for our Pydantic
+  types. The six types the revision state holds are now registered
+  (`CHECKPOINTED_TYPES`). A type missing from the list is blocked and comes
+  back as a plain dict, so a test checks the list against `RevisionState`.
+- `package_revision` now detects "nothing changed" by comparing the result
+  with the previous version, not by counting trace lines; the memory's own
+  trace line would have broken the count.
+
+**Measured live** (Madurai and Kanyakumari, 5 days, no flights or hotels,
+Postgres checkpointer):
+
+| Change | Result | Time |
+|---|---|---|
+| "add a day trip to Rameshwaram" | Day 2 replaced; the other 4 untouched | 13.4 s |
+| "undo that" | All 5 days identical to the original, field for field | 10.2 s |
+| "actually, put Rameshwaram back" | All 5 days identical to version 2 | 11.7 s |
+
+Planning still streamed each day (first at 7.3 s). The memory read back
+from Postgres listed all three changes.
+
 ---
 
 ## Where things stand
@@ -1110,13 +1170,13 @@ page:
 | Area | State |
 |---|---|
 | Agent pipeline | ✅ Every request is a LangGraph graph: ask (routing → trip / places / route, per-city fan-out), trip, revision. Strict schemas with exact day counts; streamed to the page as it runs |
-| Persistence | ✅ Postgres, append-only version history per `thread_id` |
-| Revisions | ✅ "Change this plan" box, routed to flights, hotel and/or days; refused whole with a reason when any part cannot be done; `gpt-4o` |
+| Persistence | ✅ Postgres, append-only version history per `thread_id`; LangGraph checkpoints for the revision agent's memory |
+| Revisions | ✅ "Change this plan" box, routed to flights, hotel and/or days; refused whole with a reason when any part cannot be done; remembers the trip's last 6 changes ("undo that" works); `gpt-4o` |
 | Frontend | ✅ Dark theme, free-text prompt, rupee rendering, cheapest/fastest flight table per leg, Flights/Hotels/Restaurants checkboxes, optional date pickers, revise box — no history browser |
 | Travel data | ✅ **Flights and hotels are real** under `TRAVELMATE_PROVIDER=live` (Google Flights and Google Hotels via SerpApi, two accounts, 250 searches/month each), each through a retry and fallback chain and labelled with where it came from. Attractions and weather are still sample data. `.env` is on `live` |
 | MCP | ✅ Three clients (SerpApi — flights; Google Maps Grounding Lite — places and routes; Tavily — standalone), two servers (AviationStack — now keyless, weather) |
 | Currency | ✅ Rupee-native, with legacy USD trips preserved |
-| Tests | ✅ 348 passing in Docker, `ruff` clean |
+| Tests | ✅ 364 passing in Docker, `ruff` clean |
 | GitHub | ✅ Pushed to `shanksri/Travelmate.ai` (public) over SSH |
 | Running it | Docker (`docker compose up -d api`; tests with `docker compose run --rm tests`). Windows Smart App Control blocks the local `.venv` |
 
@@ -1145,6 +1205,18 @@ to a minute.
 
 The single `app.js` file and the versioned-JSON store with a hand-written
 migration are fine at this size and are not planned to change.
+
+### Memory and caching
+
+Agreed on 2026-10-12, to learn the techniques on this project. No login is
+needed for any of it: the long-term memory can belong to an anonymous
+browser id first, and move to an account if login comes later.
+
+| # | Plan | Status |
+|---|---|---|
+| 1 | **Short-term memory per agent.** A checkpointer for the revision agent; private memory for the itinerary agent's retries. | ✅ Done: Step 45 |
+| 2 | **Long-term memory with semantic search.** After a trip is saved or changed, an LLM step pulls out facts worth keeping ("vegetarian", "dislikes early flights"); each is embedded (`text-embedding-3-small`) and stored with pgvector in the existing Postgres. Before planning, the most similar ones above a cut-off go into the prompts. | Planned |
+| 3 | **Semantic cache for itinerary drafts.** Reuse a draft when a new request means the same as an old one. Hard fields (destination, day count) must match exactly; similarity decides only the soft parts ("5 days Kerala" and "6 days Kerala" embed almost identically). Log every hit, miss and score. | Planned |
 
 ### Features
 
