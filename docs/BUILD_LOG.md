@@ -1255,6 +1255,137 @@ spending a search.
 Day 1 began at 21:00, after the flight landed. "A better rated hotel in
 Kochi" then switched only Kochi's hotel, in 3.2 s.
 
+
+---
+
+## Phase 14 — Guardrails and evals
+
+### Step 47 · Budget check, input guardrail, evals (`965133a`, 2026-10-12)
+
+From the flaws review the same day. Both guardrails had been deferred since
+Step 33.
+
+**Budget check, in code** (`app/agent/budget.py`). Before this, the only
+check was a line asking the itinerary model to "note honestly" if costs
+threatened the budget, and nothing compared the numbers.
+
+- A `check_budget` step between the itinerary and the summary adds up
+  flights, hotels and activities and compares them with the stated budget.
+  The result is saved on the itinerary (`budget_check`).
+- The message says what the total is made of and what it leaves out. For
+  example: "Over your ₹20,000 budget by ₹1,500 … Not included: flights and
+  hotels, so the trip will cost more. Activity costs are estimates." When
+  flights and hotels alone exceed the budget, it says that too.
+- The summary prompt must say so plainly when the plan is over budget.
+- Revisions check again.
+- Activity costs are now asked for the whole party, not per person, so the
+  total and the budget mean the same thing.
+
+**Input guardrail, in the parser's existing call.** No extra call: the parser
+now also returns `verdict` and `concerns`.
+
+- `not_travel`, `harmful` and `impossible` refuse the request with a sentence
+  for the traveller (422 / a job `error`). They're never retried.
+- `caution` plans the trip anyway. Its concerns are saved on the request
+  (`cautions`), given to the itinerary agent ("Plan around: …"), and shown
+  as "Before you go".
+- A tight budget is deliberately not a concern: the budget check handles it.
+
+**Evals** (`evals/`, future plan #5).
+
+- 25 fixed prompts with expected outcomes in five groups: guardrail,
+  parsing, route, trip and revision.
+- They run against the real models, with sample flights and hotels so no
+  SerpApi searches are spent:
+  `docker compose --profile evals run --rm evals [--only …] [--repeat N]`.
+- Each case reports pass or fail with the checks that failed, its OpenAI
+  calls, tokens and cost; the whole run is saved as JSON.
+- The run exits non-zero on an unexpected failure. `known_issue` marks a
+  failure that's already written down.
+- A full run takes about 50 s and costs about $0.17.
+
+**What the evals found on their first runs:**
+
+1. **"In July" was dropped.** The parser only read exact dates, so "Kerala in
+   July", asked in October, was planned for late October. Now a month with
+   no date (`travel_month`) starts on that month's 1st, next year if it has
+   passed.
+2. **The verdict was decided before the request was read.** As the first
+   field of the answer, the model wrote `verdict` before the dates. Moving
+   it to the end of the schema also fixed a known issue as a side effect:
+   "suggest me a beach trip" no longer becomes destination "a beach" (Step
+   31's limit; 3 of 3 now).
+3. **A model limit: gpt-4o-mini never flags the Kerala monsoon.** 0 of 3
+   runs, even with June to September for Kerala named in the prompt. On
+   gpt-4o, all 11 guardrail cases passed 3 of 3. Moving the parser to gpt-4o
+   adds about $0.005 per request (a full trip is about $0.006 today), so
+   that's the traveller's decision; the case is marked `known_issue` until
+   then.
+
+| Group | Passed (first run → now) |
+|---|---|
+| Guardrail | 10/11 → 10/11 (monsoon known) |
+| Parsing | 4/5 → 5/5 |
+| Route | 3/3 → 3/3 |
+| Trip | 3/3 → 3/3 |
+| Revision | 3/3 → 3/3 |
+
+Costs seen per case: a parse about $0.0003, a route about $0.003, a full
+trip about $0.005–0.007, an edit on gpt-4o about $0.03.
+
+**Verified on the page:**
+
+- "write me a poem about the monsoon" stopped at the first step with "This
+  only plans trips and answers travel questions."
+- "6 day Ladakh trip in January from Delhi under 20000 rupees" was planned
+  for 1–6 Jan 2027, with a "Before you go" note about snow and closures,
+  and the budget step flagged "Over by ₹1,500", saying that flights and
+  hotels weren't included. The summary said it was over budget too.
+
+
+### Step 48 · A Stop button (`965133a`, 2026-10-16)
+
+Until now a plan couldn't be stopped. Closing the tab never stopped it, on
+purpose: that's what lets a reload reconnect.
+
+- **`DELETE /jobs/{id}`** sets the job's `stop` flag (a `threading.Event`)
+  and returns at once: `stopping`, or `finished` if it had already ended.
+- **The run stops itself.** A Python thread can't be killed safely, so it
+  checks the flag:
+  - between graph steps, in the job's loop;
+  - inside the steps, through the graph's config (`configurable["cancel"]`,
+    read by `app/agent/events.py`): every `emit` (each status line and
+    each day) and every chunk of the streamed itinerary raise
+    `JobCancelled` once the flag is set.
+
+  Probed first: the config reaches every step and the itinerary's subgraph,
+  but not threads we start ourselves. The flight and hotel searches are
+  started right after a check, so that's enough.
+- **The OpenAI stream is closed** when the itinerary stops reading
+  (`OpenAILLM.stream` closes it in a `finally`), so the rest of the answer
+  isn't written or billed.
+- **Events:** `cancelled {"trip_saved"}`, then `done`. The trip is only saved
+  at the end, so a stop before then saves nothing. A stop while the
+  restaurants are being found keeps the saved trip.
+- **The page:** a Stop button next to the timer. The finished list reads
+  "Stopped by you after 14 s", the running step reads "Stopped", what had
+  arrived is cleared, and so is the URL.
+
+**Bug found while testing it live:** the step list redrew its whole card
+every second for the timer, which replaced the Stop button each time, and
+a click between press and release was lost. The browser test's first click
+missed for exactly that reason (and that plan ran to the end). The frame
+and the button are now built once per plan; only the text and the step
+rows update.
+
+**Verified live:** "8 day Rajasthan trip from Delhi", stopped while the days
+were being written. The server logged the DELETE and "stopped by the
+traveller". No AI call came after the itinerary's, and no trip was saved.
+
+Not built: with more than one server process, the flag would need to be
+shared (a Redis key, or pub/sub to reach the worker running the job), and
+pausing and resuming would need the graph checkpointed (see Step 45).
+
 ---
 
 ## Where things stand
@@ -1268,7 +1399,9 @@ Kochi" then switched only Kochi's hotel, in 3.2 s.
 | Travel data | ✅ **Flights and hotels are real** under `TRAVELMATE_PROVIDER=live` (Google Flights and Google Hotels via SerpApi, two accounts, 250 searches/month each), each through a retry and fallback chain and labelled with where it came from. A route step picks the towns and airports first; hotels are searched per town, 3★ and up, no hostels. Attractions and weather have no real source and are no longer used. `.env` is on `live` |
 | MCP | ✅ Three clients (SerpApi — flights; Google Maps Grounding Lite — places and routes; Tavily — standalone), two servers (AviationStack — now keyless, weather) |
 | Currency | ✅ Rupee-native, with legacy USD trips preserved |
-| Tests | ✅ 381 passing in Docker, `ruff` clean |
+| Tests | ✅ 421 passing in Docker, `ruff` clean |
+| Evals | ✅ 25 cases against the real models (`evals/`), 24 pass; the Kerala monsoon caution needs gpt-4o for the parser (a pending decision) |
+| Guardrails | ✅ Input guardrail in the parser call (refuse not-travel, harmful, impossible; warn on cautions); budget check in code. ❌ No access control, rate limits or spend caps yet |
 | GitHub | ✅ Pushed to `shanksri/Travelmate.ai` (public) over SSH |
 | Running it | Docker (`docker compose up -d api`; tests with `docker compose run --rm tests`). Windows Smart App Control blocks the local `.venv` |
 
@@ -1292,7 +1425,7 @@ to a minute.
 | 2 | **One orchestrator.** /ask becomes a graph with a routing step, then trip, places or route branches. Revisions become a small graph of their own. Per-city places become a LangGraph fan-out. | Parallelism, tracing and streaming in one place. Budget check and guardrails slot in as extra steps. Includes making endpoints, LLM calls and the graph async, moved here from #3. | ✅ Done: Step 43. Endpoints and LLM calls are still synchronous (threads); not needed for one user |
 | 3 | **Keep MCP connections open; run parallel work concurrently.** One long-lived session per MCP server, reused across calls, instead of a new connection and handshake every time. | Every Maps and flight call paid the connection cost. | ✅ Done: Step 37. The async-throughout part moved to #2 |
 | 4 | **Structured outputs.** Every JSON call passes its exact schema to OpenAI (`json_schema`, strict), instead of JSON mode, then hand checks, then retry. | Several fixed bugs were format failures, and each retry costs a full LLM call. | ✅ Done: Step 38 |
-| 5 | **Evaluation suite and tracing.** The live checks done by hand become a fixed prompt set with expected outcomes, run against the real model on demand. Examples: "Ladakh → declined", "Kerala and Tamil Nadu → one destination", "houseboat → only day 3 changed". LangSmith tracing is already configured in `.env` but not connected. | Prompt and model changes stop being guesswork; per-plan cost becomes visible. | Planned, before the next big prompt change |
+| 5 | **Evaluation suite and tracing.** The live checks done by hand become a fixed prompt set with expected outcomes, run against the real model on demand. Examples: "Ladakh → declined", "Kerala and Tamil Nadu → one destination", "houseboat → only day 3 changed". LangSmith tracing is already configured in `.env` but not connected. | Prompt and model changes stop being guesswork; per-plan cost becomes visible. | ✅ Evals done: Step 47 (25 cases, cost per case). Tracing still to connect |
 | 6 | **One tools layer.** Flights, hotels, places, routes and weather each get an interface with sample and live implementations chosen by config. | Real hotels and real weather become small changes. The weather MCP server built in Step 19 is still unused by the planner. | Partly done: flights and hotels share one fallback chain and report a `DataSource` (Steps 41–42). Weather is still to come |
 
 The single `app.js` file and the versioned-JSON store with a hand-written
@@ -1312,10 +1445,7 @@ browser id first, and move to an account if login comes later.
 
 ### Features
 
-- **Input guardrails.** A "is this a travel request, and if not why" check
-  inside the existing parser call. Deferred by the user.
-- **Budget check.** Compare the estimated total with the stated budget in
-  code, not with an LLM agent. Deferred by the user.
+- ~~Input guardrails~~ and ~~budget check~~: done in Step 47.
 - ~~Real hotel data~~: done in Step 42; one search per town in Step 46.
 - **Real weather in the itinerary.** Use the existing weather client or MCP
   server instead of sample weather. Forecasts only reach about two weeks
@@ -1330,14 +1460,69 @@ browser id first, and move to an account if login comes later.
 - **Day-level patch revisions.** Regenerate only the days a change touches,
   if revision latency matters.
 
+### From the flaws review (2026-10-12)
+
+What the review found that isn't built yet, most serious first.
+
+**Access and spending** (matters once anyone else can reach the app):
+
+- **Listen only on this machine.** Docker publishes the app (`8000`) and
+  Postgres (`5433`, password `travelmate`) on every network interface, so
+  anyone on the same Wi-Fi can use the app and spend the keys. Bind both to
+  `127.0.0.1`.
+- **Login, then ownership.** `GET /trips` lists every trip and anyone can
+  revise any of them. Sign in with Google before going online (see the
+  memory plans: an anonymous id first is enough for memory).
+- **Rate limits and spend caps.** A daily cap on OpenAI calls and SerpApi
+  searches, and a warning on the page when the SerpApi quota runs low. A
+  multi-town trip uses about 5 searches; each account has 250 a month.
+- **Production setup.** The compose file is for development (`--reload`,
+  weak database password, no HTTPS).
+
+**Plan quality:**
+
+- **Verify places.** Activities are written from the model's memory, so a
+  closed or invented place gets through. Check names against Google Maps
+  (results can be used, not stored).
+- **Real travel times and opening hours** in the day plan, using the Maps
+  routes we already have.
+- **A better booked flight.** The cheapest on the day is booked even if it's
+  a 21-hour journey or lands at midnight; weigh duration and arrival time.
+- **Parser model** (see Step 47): gpt-4o catches seasonal risks gpt-4o-mini
+  misses, for about $0.005 more per request.
+- **Rooms and children.** Hotel prices are for adults only.
+
+**Edits:**
+
+- **Hotels when nights move between towns** (Step 46's limit): search the
+  changed stays again, or say the hotels no longer match.
+- **A step list for edits.** Edits still show a single "Updating…" line for
+  up to a minute.
+- **Reopen a trip or an earlier version** from the page (also listed under
+  Features).
+
+**Reliability:**
+
+- A job running when the server restarts is lost (jobs live in memory).
+- Google Maps stops when the Cloud free trial ends in December 2026.
+- Two SerpApi accounts to double the quota is a terms-of-service risk.
+- The airport list is downloaded at runtime from Travelpayouts.
+
+**Engineering:**
+
+- The page is one 750-line script with no tests of its own.
+- LangSmith tracing is configured but not connected (future plan #5).
+
 ### Known limits carried forward
 
 - A revision that moves nights between towns ("one more day in Kochi")
   re-plans the days but keeps the hotels as booked, since revisions never
   search again (Step 46).
 
-- `gpt-4o-mini` turns "suggest me a beach trip" into destination "a beach"
-  (Step 31).
+- ~~`gpt-4o-mini` turns "suggest me a beach trip" into destination "a
+  beach" (Step 31)~~: fixed in Step 47 by asking for the verdict last.
+- `gpt-4o-mini` doesn't flag seasonal risks like the Kerala monsoon; gpt-4o
+  does (Step 47). Which model parses is an open decision.
 - Maps Grounding Lite routes are driving or walking only (Step 34).
 - The Google Cloud free trial ends in December 2026; Maps stops unless the
   account is upgraded then.
