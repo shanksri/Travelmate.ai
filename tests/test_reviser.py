@@ -768,3 +768,13 @@ def test_the_prompts_say_what_the_memory_is_for():
     assert "put back the days it replaced exactly as recorded" in revise
     assert "judge every request afresh" in revise
     assert "pick the option it switched from" in router
+
+
+def test_a_revision_checks_the_budget_again(planned, trip_request, settings):
+    """The fixture's request has a ₹2,50,000 budget."""
+    revised = revise_trip(
+        planned, "more on day 1", llm=revising_llm(trip_request), settings=settings
+    )
+
+    check = revised.itinerary.budget_check
+    assert check.budget == 250_000 and check.total == revised.itinerary.total_estimated_cost

@@ -9,11 +9,12 @@ page URL — replays every event so far and carries on from there.
 
 Events, in the order a trip produces them (each a dict with a `type`):
 
-    status      {"stage", "message"}   what's happening now
+    status      {"stage", "state", "message"}   a step starting or finishing
     intent      {"kind"}               trip, places or route
+    stops       {"route"}              the towns and airports (RoutePlan)
     flights     {"outbound_options", "return_options",
                  "outbound_source", "return_source"}
-    hotels      {"options", "source"}
+    hotels      {"stays"}              one HotelStay per town
     day         {"day"}                one day, as soon as the AI finishes it
     days_reset  {}                     an attempt was rejected; days restart
     trip        {"trip"}               the finished trip, already saved
@@ -21,7 +22,14 @@ Events, in the order a trip produces them (each a dict with a `type`):
     places      {"places"}             a places answer
     route       {"route"}              a route answer
     error       {"status", "detail"}   what went wrong, as the API would say
+    cancelled   {"trip_saved"}         stopped by the traveller
     done        {}                     always last
+
+Stopping: `Job.cancel()` (`DELETE /jobs/{id}`) sets the job's `stop` flag.
+The run checks it between graph steps, and the steps check it themselves
+through the graph's config (app/agent/events.py), so a stop takes effect
+within about a second. Calls already sent finish; nothing after them runs,
+and nothing is saved unless the trip was already.
 
 Jobs live in this process only: a server restart forgets them (a saved trip
 stays saved). Finished jobs are forgotten after `JOB_TTL_SECONDS`.
@@ -36,6 +44,7 @@ from dataclasses import dataclass, field
 
 from pydantic_core import to_jsonable_python
 
+from app.agent.events import JobCancelled
 from app.agent.graph import build_ask_graph
 from app.agent.state import PageChoices, initial_ask_state
 from app.api.errors import describe_error
@@ -51,7 +60,17 @@ class Job:
     created: float = field(default_factory=time.time)
     events: list[dict] = field(default_factory=list)
     done: bool = False
+    # Set by `cancel`; the run stops at its next check.
+    stop: threading.Event = field(default_factory=threading.Event, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def cancel(self) -> bool:
+        """Ask the run to stop. False if it had already finished."""
+        with self._lock:
+            if self.done:
+                return False
+            self.stop.set()
+            return True
 
     def add(self, event: dict) -> None:
         jsonable = to_jsonable_python(event)
@@ -131,14 +150,20 @@ def run_ask(
     """Stream the ask graph into `job`. Never raises: a failure becomes an
     `error` event, and the job always ends with `done`."""
     graph = build_ask_graph(provider, llm, max_itinerary_retries, route_model)
+    trip_saved = False
+    # subgraphs=True, or the events an agent's own subgraph emits (the
+    # itinerary agent's days) never reach the stream. The stop flag rides
+    # in the config, where every step can see it.
+    steps = graph.stream(
+        initial_ask_state(prompt, choices),
+        {"configurable": {"cancel": job.stop}},
+        stream_mode=["updates", "custom"],
+        subgraphs=True,
+    )
     try:
-        # subgraphs=True, or the events an agent's own subgraph emits (the
-        # itinerary agent's days) never reach the stream.
-        for namespace, mode, chunk in graph.stream(
-            initial_ask_state(prompt, choices),
-            stream_mode=["updates", "custom"],
-            subgraphs=True,
-        ):
+        for namespace, mode, chunk in steps:
+            if job.stop.is_set():
+                raise JobCancelled()
             if mode == "custom":
                 job.add(chunk)
                 continue
@@ -149,8 +174,12 @@ def run_ask(
                     # Saved before it's announced, so a page that reloads on
                     # the `trip` event finds it in the store.
                     save_trip(update["trip"])
+                    trip_saved = True
                 for event in _events_for(step, update or {}):
                     job.add(event)
+    except JobCancelled:
+        logger.info("job %s stopped by the traveller", job.id)
+        job.add({"type": "cancelled", "trip_saved": trip_saved})
     except Exception as exc:
         described = describe_error(exc)
         if described is None:
@@ -158,6 +187,10 @@ def run_ask(
             described = (500, f"Something went wrong: {exc}")
         job.add({"type": "error", "status": described[0], "detail": described[1]})
     finally:
+        # Ends the graph run: steps not yet started never start. One still
+        # running finishes its current call first, and then stops at its
+        # next check.
+        steps.close()
         job.add({"type": "done"})
 
 

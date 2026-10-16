@@ -3,6 +3,7 @@ them. The LLM is scripted and streams its answers in small chunks, as the
 real one does; travel data is the mock provider; Google Maps is faked."""
 
 import json
+import threading
 from datetime import date
 
 import pytest
@@ -159,7 +160,31 @@ def test_unticked_steps_report_themselves_skipped(maps):
     job, _ = run(trip_llm(), include_flights=False, include_hotels=False)
 
     skipped = {e["stage"] for e in job.events if e["type"] == "status" and e["state"] == "skipped"}
-    assert skipped == {"flights", "hotels", "restaurants"}
+    assert skipped == {"flights", "hotels", "budget", "restaurants"}  # no budget given
+
+
+def test_a_budget_is_checked_before_the_summary(maps):
+    job, saved = run(trip_llm(budget=5_000))
+
+    budget = [e for e in job.events if e["type"] == "status" and e["stage"] == "budget"]
+    assert budget[-1]["state"] == "warn" and budget[-1]["message"].startswith("Over by ₹")
+    (trip, _), = saved
+    assert trip.itinerary.budget_check.within is False
+    assert any(m.startswith("budget_check: over") for m in trip.agent_trace)
+
+
+def test_a_refused_request_ends_with_the_guardrails_message(maps):
+    llm = StreamingFakeLLM(by_system={
+        PARSE_REQUEST_SYSTEM: [_parse(verdict="not_travel", concerns=["It asks for a poem."])]
+    })
+
+    job, saved = run(llm, prompt="write me a poem about cats")
+
+    error = next(e for e in job.events if e["type"] == "error")
+    assert error["status"] == 422
+    assert error["detail"] == (
+        "This only plans trips and answers travel questions. It asks for a poem.")
+    assert saved == [] and types(job)[-1] == "done"
 
 
 def test_every_event_is_plain_json(maps):
@@ -289,3 +314,113 @@ def test_starting_a_job_validates_like_ask(client):
     response = client.post("/jobs", json={"prompt": "Goa", "start_date": "2027-01-10"})
 
     assert response.status_code == 422
+
+
+# --- stopping a job ----------------------------------------------------------
+
+
+class _Paused(StreamingFakeLLM):
+    """Waits inside the route planner's call until told to go on, so a test
+    can stop the job while a step is running."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.inside = threading.Event()
+        self.go_on = threading.Event()
+
+    def complete(self, **kwargs):
+        if kwargs["system"] == ROUTE_PLAN_SYSTEM:
+            self.inside.set()
+            self.go_on.wait(5)
+        return super().complete(**kwargs)
+
+
+def _start(llm, **choice_overrides):
+    job = jobs.Job(id="test")
+    saved = []
+    thread = threading.Thread(
+        target=jobs.run_ask,
+        args=(job, "10 days in Kerala", choices(**choice_overrides)),
+        kwargs={"provider": MockTravelProvider(), "llm": llm, "max_itinerary_retries": 2,
+                "save_trip": saved.append},
+    )
+    thread.start()
+    return job, saved, thread
+
+
+def test_a_job_stopped_mid_step_ends_after_that_step_and_saves_nothing(maps):
+    llm = _Paused(by_system=trip_llm().by_system_queues())
+    job, saved, thread = _start(llm)
+
+    assert llm.inside.wait(5)
+    assert job.cancel() is True
+    llm.go_on.set()  # the call already sent comes back...
+    thread.join(5)
+
+    # ...and nothing after it runs.
+    kinds = types(job)
+    assert kinds[-2:] == ["cancelled", "done"]
+    assert job.events[-2] == {"type": "cancelled", "trip_saved": False}
+    assert "error" not in kinds and "trip" not in kinds and saved == []
+    asked = {c["system"] for c in llm.calls}
+    assert ITINERARY_AGENT_SYSTEM not in asked and FINAL_RESPONSE_AGENT_SYSTEM not in asked
+
+
+def test_a_stop_during_the_itinerary_closes_its_stream_early(maps):
+    class _StopsMidAnswer(StreamingFakeLLM):
+        job = None
+        chunks_read = 0
+
+        def stream(self, **kwargs):
+            for chunk in super().stream(**kwargs):
+                self.chunks_read += 1
+                if self.chunks_read == 3:
+                    self.job.cancel()  # the traveller presses Stop here
+                yield chunk
+
+    llm = _StopsMidAnswer(by_system=trip_llm(cities=["Kochi"] * 4).by_system_queues())
+    job = jobs.Job(id="test")
+    llm.job = job
+    jobs.run_ask(job, "4 days in Kochi", choices(), provider=MockTravelProvider(), llm=llm,
+                 max_itinerary_retries=2, save_trip=lambda trip: None)
+
+    full_answer = len(trip_llm(cities=["Kochi"] * 4).by_system_queues()[
+        ITINERARY_AGENT_SYSTEM][0]) // 7 + 1
+    assert llm.chunks_read == 3 < full_answer
+    assert types(job)[-2:] == ["cancelled", "done"]
+
+
+def test_stopping_after_the_trip_is_saved_says_so(maps, monkeypatch):
+    job = jobs.Job(id="test")
+
+    def search_then_stop(query):
+        job.cancel()  # Stop pressed while the restaurants are being found
+        return PlacesAnswer(query=query, summary="", places=[])
+
+    monkeypatch.setattr(google_maps, "search_places", search_then_stop)
+    saved = []
+    jobs.run_ask(job, "2 days in Kerala from Delhi", choices(include_restaurants=True),
+                 provider=MockTravelProvider(), llm=trip_llm(), max_itinerary_retries=2,
+                 save_trip=saved.append)
+
+    assert len(saved) == 1
+    assert {"type": "cancelled", "trip_saved": True} in job.events
+
+
+def test_a_finished_job_cannot_be_stopped(maps):
+    job, _ = run(trip_llm())
+
+    assert job.cancel() is False
+    assert "cancelled" not in types(job)
+
+
+def test_delete_stops_a_running_job_and_reports_a_finished_one():
+    client = TestClient(app)
+    running = jobs.registry.create()
+    finished = jobs.registry.create()
+    finished.add({"type": "done"})
+
+    assert client.delete(f"/jobs/{running.id}").json() == {"status": "stopping"}
+    assert running.stop.is_set()
+    assert client.delete(f"/jobs/{finished.id}").json() == {"status": "finished"}
+    assert client.delete("/jobs/nope").status_code == 404

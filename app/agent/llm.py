@@ -125,14 +125,21 @@ class OpenAILLM:
         response = self._client.chat.completions.create(
             stream=True, **self._request(system, user, json_mode, schema)
         )
-        for chunk in response:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            if getattr(delta, "refusal", None):
-                logger.warning("model refused: %s", delta.refusal)
-            if delta.content:
-                yield delta.content
+        try:
+            for chunk in response:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if getattr(delta, "refusal", None):
+                    logger.warning("model refused: %s", delta.refusal)
+                if delta.content:
+                    yield delta.content
+        finally:
+            # Also when the reader stops early (a stopped job): closing the
+            # connection ends the answer instead of leaving it running.
+            close = getattr(response, "close", None)
+            if close is not None:
+                close()
 
     def complete(
         self,

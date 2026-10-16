@@ -282,6 +282,11 @@ class FakeLLM:
         self._by_system = {key: list(value) for key, value in (by_system or {}).items()}
         self.calls: list[dict] = []
 
+    def by_system_queues(self) -> dict[str, list[str]]:
+        """A copy of what's still scripted per system prompt, for building
+        another fake (a subclass) with the same answers."""
+        return {key: list(queue) for key, queue in self._by_system.items()}
+
     def complete(
         self, *, system: str, user: str, json_mode: bool = False, schema=None
     ) -> str:

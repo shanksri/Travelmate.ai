@@ -458,3 +458,17 @@ def test_ask_turns_a_parse_failure_into_a_422(client, monkeypatch):
 
     assert response.status_code == 422
     assert "no destination was named" in response.json()["detail"]
+
+
+def test_ask_turns_a_refused_request_into_a_422_with_the_reason(client, monkeypatch):
+    from app.agent.prompt_parser import RequestRefused
+
+    def refuse(prompt, **kw):
+        raise RequestRefused("not_travel", "This only plans trips. It asks for a poem.")
+
+    monkeypatch.setattr("app.api.routes.ask.answer_prompt", refuse)
+
+    response = client.post("/ask", json={"prompt": "write me a poem"})
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "This only plans trips. It asks for a poem."

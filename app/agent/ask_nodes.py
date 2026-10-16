@@ -53,10 +53,13 @@ def _understood(interpretation) -> str:
 
 def _trip_line(trip: TripRequest) -> str:
     origin = f" from {trip.origin}" if trip.origin else ""
-    return (
+    line = (
         f"A trip to {trip.destination}{origin}, {trip.start_date:%d %b} to "
         f"{trip.end_date:%d %b} ({trip.nights} nights)"
     )
+    if trip.cautions:
+        line += f" · {len(trip.cautions)} thing(s) to know before you go"
+    return line
 
 
 def next_after_interpret(state: AskState) -> str:

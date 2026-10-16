@@ -37,6 +37,25 @@ class PromptParseError(ValueError):
 
 Intent = Literal["trip", "places", "route"]
 
+# The input guardrail's verdict, read in the same call as everything else
+# (PARSE_REQUEST_SYSTEM). The first three refuse the request; "caution"
+# plans it and passes the concerns along.
+Verdict = Literal["ok", "caution", "not_travel", "harmful", "impossible"]
+REFUSED: dict[str, str] = {
+    "not_travel": "This only plans trips and answers travel questions.",
+    "harmful": "This can't help with that.",
+    "impossible": "This trip can't be planned as asked.",
+}
+
+
+class RequestRefused(Exception):
+    """The input guardrail turned the request down; `str()` is the message
+    for the traveller. Not a parse error: the request was understood."""
+
+    def __init__(self, verdict: str, message: str) -> None:
+        super().__init__(message)
+        self.verdict = verdict
+
 
 class ParsedPrompt(BaseModel):
     """What the LLM extracts — deliberately looser than `TripRequest`: dates
@@ -52,6 +71,9 @@ class ParsedPrompt(BaseModel):
     destination: str | None = None
     origin: str | None = None
     start_date: date | None = None
+    # "In July": a month with no date. Found by the evals: before this, the
+    # month was dropped and the trip planned two weeks out, in October.
+    travel_month: int | None = Field(default=None, ge=1, le=12)
     end_date: date | None = None
     duration_days: int | None = Field(default=None, ge=1, le=60)
     travelers: int = Field(default=1, ge=1, le=20)
@@ -59,6 +81,13 @@ class ParsedPrompt(BaseModel):
     interests: list[str] = Field(default_factory=list)
     pace: Pace = "balanced"
     notes: str | None = None
+
+    # The guardrail: refuse, plan with concerns, or just plan. Last, so the
+    # model writes it after reading the request: as the first field, it
+    # judged "Kerala in July" before reading the month, and never saw the
+    # monsoon (0 of 3 runs flagged it; the evals found it).
+    verdict: Verdict = "ok"
+    concerns: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -76,13 +105,29 @@ class ParsedPrompt(BaseModel):
             "interests": [],
             "pace": "balanced",
             "intent": "trip",
+            "verdict": "ok",
+            "concerns": [],
         }
         return {key: (defaults.get(key) if key in defaults and value is None else value)
                 for key, value in data.items()}
 
 
+def _month_start(month: int, today: date) -> date:
+    """The first day of the next `month` at least DEFAULT_LEAD_DAYS away, or
+    that earliest day itself when it already falls in `month`."""
+    earliest = today + timedelta(days=DEFAULT_LEAD_DAYS)
+    if earliest.month == month:
+        return earliest
+    start = date(earliest.year, month, 1)
+    return start if start > earliest else date(earliest.year + 1, month, 1)
+
+
 def _resolve_dates(parsed: ParsedPrompt, today: date) -> tuple[date, date]:
     """Fill in whichever of start/end/duration the model left out."""
+    if parsed.travel_month and not (parsed.start_date or parsed.end_date):
+        start = _month_start(parsed.travel_month, today)
+        duration = parsed.duration_days or DEFAULT_DURATION_DAYS
+        return start, start + timedelta(days=duration - 1)
     if parsed.start_date and parsed.end_date:
         return parsed.start_date, parsed.end_date
     if parsed.start_date and parsed.duration_days:
@@ -122,7 +167,15 @@ def _trip_request(parsed: ParsedPrompt, today: date) -> TripRequest:
         pace=parsed.pace,
         notes=parsed.notes,
         places_per_city=parsed.places_per_city,
+        cautions=parsed.concerns if parsed.verdict == "caution" else [],
     )
+
+
+def _refuse_if_asked(parsed: ParsedPrompt) -> None:
+    """Raise RequestRefused when the guardrail's verdict refuses."""
+    if parsed.verdict in REFUSED:
+        reason = " ".join(parsed.concerns[:2])
+        raise RequestRefused(parsed.verdict, f"{REFUSED[parsed.verdict]} {reason}".strip())
 
 
 def _missing_for(parsed: ParsedPrompt) -> str | None:
@@ -153,6 +206,9 @@ def _interpret(
         except (json.JSONDecodeError, ValidationError) as exc:
             feedback = last_error = f"could not parse that as request parameters: {exc}"
             continue
+
+        # Refused requests aren't retried: the answer was understood.
+        _refuse_if_asked(parsed)
 
         if not always_trip and parsed.intent != "trip":
             missing = _missing_for(parsed)

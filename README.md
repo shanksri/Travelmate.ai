@@ -49,9 +49,28 @@ airports exist) and sends it back with the reason if not. Then:
 
 Before this, "Kerala and Tamil Nadu" was searched as typed: it isn't an
 airport, so there were no flights, and one hotel search across two states
-returned hostels in towns the trip never visited. Revisions are a graph too: route_change → apply_picks →
-revise_days (only when the days change) → package_revision → remember, with
-any step able to end it with a reason.
+returned hostels in towns the trip never visited.
+
+Revisions are a graph too: route_change → apply_picks → revise_days (only
+when the days change) → package_revision → remember, with any step able to
+end it with a reason.
+
+**Guardrails.**
+
+- **On the way in:** the parser's one call also judges the request. Its
+  `verdict` refuses what isn't travel (including attempts to change its
+  instructions), what's harmful or illegal, and what can't be done ("Japan,
+  Brazil and Kenya in 2 days"), with a sentence for the traveller. A
+  `caution` (a permit, the season, an advisory) still plans the trip and
+  shows "Before you go". The verdict is the last field of the answer, so
+  the model judges after reading the dates.
+- **On the way out:** `check_budget` (`app/agent/budget.py`) compares the
+  total with the stated budget in plain code, and says what the total is
+  made of and what it leaves out ("Over your ₹20,000 budget by ₹1,500 …
+  Not included: flights and hotels").
+- **Throughout:** every model answer is schema-checked and retried with the
+  reason, the model never types a price, flight or hotel, and it can't call
+  a tool itself.
 
 **Memory.** Each agent that iterates keeps its own short-term memory, private
 to it, rather than one shared state:
@@ -88,6 +107,24 @@ a graph isn't being streamed. The job id goes in the page URL, so a reload
 reconnects and replays; closing the tab doesn't stop the job, and the trip is
 saved either way. Jobs live in the server process for an hour; a restart
 forgets them (saved trips stay).
+
+**Stopping.** The step list has a Stop button while a plan runs. It calls
+`DELETE /jobs/{id}`, which only sets a flag on the job (a
+`threading.Event`). A thread can't be stopped from outside, so the run
+stops itself at the next safe point:
+
+- between graph steps;
+- at every status line or day the steps emit (the flag rides in the graph's
+  config, so steps and the itinerary's subgraph can see it);
+- at every chunk of the streamed itinerary, where stopping closes the OpenAI
+  stream and the rest of the answer is never written or billed.
+
+A call already sent (a search, a short AI call) finishes first, so a stop
+takes about a second. The job ends with a `cancelled` event. Nothing is
+saved unless the trip already was (a stop during the restaurants), and the
+page clears what had arrived. With several server processes, the flag would
+need to be shared (a Redis key, or pub/sub to reach the right worker); with
+one process, a flag in memory is enough.
 
 Measured (Varanasi → Kochi, 3 nights, 2 people, flights, hotels and
 restaurants): hotels at **4.4 s**, flights at 6.4 s, day 1 at 10.8 s, the
@@ -198,6 +235,7 @@ uvicorn app.main:app --reload
 | `GET` | `/` | The frontend — plan a trip, find places or measure a route from one sentence |
 | `GET` | `/health` | Liveness, plus the configured model, provider and store |
 | `POST` | `/jobs` | Start the same as `/ask` as a background job; returns `{"job_id"}` at once (202). What the frontend calls |
+| `DELETE` | `/jobs/{id}` | Stop a running job; `{"status": "stopping"}`, or `"finished"` if it already had |
 | `GET` | `/jobs/{id}/events` | The job's progress as Server-Sent Events, replayable; resumes after `Last-Event-ID` |
 | `POST` | `/ask` | One sentence → a planned trip, places from Google Maps, or a route — whichever it asks for. Blocking; same graph as `/jobs` |
 | `POST` | `/trips/plan` | Plan a trip from structured parameters; returns the stored `PlannedTrip` |
@@ -705,6 +743,34 @@ in-memory SQLite engine — no Docker needed to test the query logic itself;
 `conftest.py` also forces `TRAVELMATE_STORE=memory` before any test can read a
 developer's local `.env`, so a machine configured for Postgres never makes the
 suite try to open a real database connection.
+
+### Evals
+
+The tests prove the plumbing with a scripted model; the evals check what the
+real models do. `evals/cases.py` has 25 fixed prompts with expected outcomes
+in five groups:
+
+- **guardrail:** a poem or code is refused; smuggling is refused; Mars is
+  impossible; Ladakh in January gets a caution; Goa doesn't.
+- **parsing:** "Kerala and Tamil Nadu" is one destination; "3 lakhs" is
+  300000.
+- **route:** a fair split of nights, real airports.
+- **trip:** every day in its route town; an over-budget plan says so.
+- **revision:** add Rameshwaram, then "undo that" restores every day;
+  "3 days in Ladakh" is declined; a houseboat on day 3 changes only day 3.
+
+```bash
+docker compose --profile evals run --rm evals                  # all, ~50 s, ~$0.17
+docker compose --profile evals run --rm evals --only guardrail --repeat 3
+docker compose --profile evals run --rm evals --case kerala_july
+docker compose --profile evals run --rm -e TRAVELMATE_MODEL=gpt-4o evals --only guardrail
+```
+
+Flights and hotels are sample data unless `--live`, so a run spends no
+SerpApi searches and saves nothing. Each case prints pass or fail with the
+checks that failed, its OpenAI calls and an approximate cost; the run is
+saved to `evals/results/` (not committed). The command exits non-zero on an
+unexpected failure; a case marked `known_issue` is reported but expected.
 
 ## Docker
 

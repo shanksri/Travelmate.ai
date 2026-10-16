@@ -21,7 +21,7 @@ from langgraph.graph.state import CompiledStateGraph
 from pydantic import ValidationError
 
 from app.agent.errors import PlanningError
-from app.agent.events import emit, status
+from app.agent.events import emit, status, stop_if_cancelled
 from app.agent.itinerary_json import ItineraryValidationError, parse_itinerary
 from app.agent.llm import LLM
 from app.agent.prompts import (
@@ -353,6 +353,9 @@ def _write_itinerary(llm: LLM, user_prompt: str, day_count: int) -> str:
     for chunk in stream(
         system=ITINERARY_AGENT_SYSTEM, user=user_prompt, json_mode=True, schema=schema
     ):
+        # The longest call of a plan. Stopping here closes the stream, and
+        # OpenAI stops writing (and billing) the rest of the answer.
+        stop_if_cancelled()
         parts.append(chunk)
         for raw_day in streamer.feed(chunk):
             try:

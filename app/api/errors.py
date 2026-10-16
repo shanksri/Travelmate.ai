@@ -12,7 +12,7 @@ import openai
 from fastapi import HTTPException, status
 
 from app.agent.errors import PlanningError
-from app.agent.prompt_parser import PromptParseError
+from app.agent.prompt_parser import PromptParseError, RequestRefused
 from app.agent.reviser import RevisionDeclined, RevisionError
 from app.providers.google_maps import GoogleMapsError
 
@@ -48,6 +48,10 @@ def describe_error(exc: Exception) -> tuple[int, str] | None:
     if isinstance(exc, GoogleMapsError):
         logger.error("google maps failed: %s", exc)
         return status.HTTP_502_BAD_GATEWAY, f"Google Maps: {exc}"
+    if isinstance(exc, RequestRefused):
+        # The guardrail's own sentence, for the traveller; nothing is planned.
+        logger.info("request refused (%s): %s", exc.verdict, exc)
+        return status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)
     if isinstance(exc, PromptParseError):
         return status.HTTP_422_UNPROCESSABLE_CONTENT, f"Couldn't understand that request: {exc}"
     return None

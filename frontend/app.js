@@ -92,6 +92,7 @@ form.addEventListener("submit", async (event) => {
   reviseCard.hidden = true;
   submitButton.disabled = true;
   hideStatus();
+  currentJobId = null;  // the next job's id arrives with the reply below
   startProgress();
 
   try {
@@ -136,6 +137,7 @@ const STEP_LABELS = {
   flights: "Searching flights",
   hotels: "Searching hotels",
   itinerary: "Writing the day-by-day plan",
+  budget: "Checking the budget",
   summary: "Writing the trip summary",
   restaurants: "Finding places to eat",
   places: "Searching Google Maps",
@@ -143,7 +145,10 @@ const STEP_LABELS = {
 };
 
 const STEPS_FOR = {
-  trip: ["interpret", "route_plan", "flights", "hotels", "itinerary", "summary", "restaurants"],
+  trip: [
+    "interpret", "route_plan", "flights", "hotels", "itinerary", "budget", "summary",
+    "restaurants",
+  ],
   places: ["interpret", "places"],
   route: ["interpret", "route"],
 };
@@ -152,7 +157,21 @@ let progress = null;
 
 function startProgress() {
   stopProgressTimer();
-  progress = { steps: [], started: Date.now(), ended: null, outcome: null, timer: null };
+  progress = {
+    steps: [], started: Date.now(), ended: null, outcome: null, timer: null, stopping: false,
+  };
+  // The frame, with the Stop button, is built once per job. Redrawing it on
+  // every tick replaced the button each second, and a click landing between
+  // press and release was lost.
+  progressEl.innerHTML = `
+    <div class="progress-head">
+      <span class="progress-title"></span>
+      <span class="progress-actions">
+        <span class="progress-time"></span>
+        <button type="button" class="stop-button" data-action="stop" hidden>Stop</button>
+      </span>
+    </div>
+    <ol class="steps"></ol>`;
   setStep("interpret", "active", "Reading your request…");
   progress.timer = setInterval(renderProgress, 1000);
   renderProgress();
@@ -211,8 +230,12 @@ function endProgress(outcome) {
   stopProgressTimer();
   progress.ended = Date.now();
   progress.outcome = outcome;
+  const ending = { failed: "failed", stopped: "stopped" }[outcome] || "done";
   for (const step of progress.steps) {
-    if (step.state === "active") step.state = outcome === "failed" ? "failed" : "done";
+    if (step.state === "active") {
+      step.state = ending;
+      if (ending === "stopped") step.detail = "Stopped";
+    }
   }
   renderProgress();
 }
@@ -220,22 +243,25 @@ function endProgress(outcome) {
 function renderProgress() {
   if (!progress) return;
   const seconds = Math.round(((progress.ended || Date.now()) - progress.started) / 1000);
-  const title =
-    progress.outcome === "failed"
-      ? `Stopped after ${seconds} s`
-      : progress.outcome === "done"
-        ? `Done in ${seconds} s`
-        : "Working on it…";
+  const title = {
+    failed: `Stopped after ${seconds} s`,
+    stopped: `Stopped by you after ${seconds} s`,
+    done: `Done in ${seconds} s`,
+  }[progress.outcome] || "Working on it…";
   progressEl.hidden = false;
-  progressEl.innerHTML = `
-    <div class="progress-head">
-      <span class="progress-title">${title}</span>
-      ${progress.outcome ? "" : `<span class="progress-time">${seconds} s</span>`}
-    </div>
-    <ol class="steps">
-      ${progress.steps
-        .map(
-          (step) => `
+  progressEl.querySelector(".progress-title").textContent = title;
+  const time = progressEl.querySelector(".progress-time");
+  time.hidden = Boolean(progress.outcome);
+  time.textContent = `${seconds} s`;
+  // Only while a job is running on the server: before it has an id there's
+  // nothing to stop yet.
+  const stop = progressEl.querySelector(".stop-button");
+  stop.hidden = Boolean(progress.outcome) || !currentJobId;
+  stop.disabled = progress.stopping;
+  stop.textContent = progress.stopping ? "Stopping…" : "Stop";
+  progressEl.querySelector(".steps").innerHTML = progress.steps
+    .map(
+      (step) => `
         <li class="step ${step.state}">
           <span class="step-icon" aria-hidden="true"></span>
           <div>
@@ -243,10 +269,27 @@ function renderProgress() {
             ${step.detail ? `<div class="step-detail">${escapeHtml(step.detail)}</div>` : ""}
           </div>
         </li>`
-        )
-        .join("")}
-    </ol>`;
+    )
+    .join("");
 }
+
+// The Stop button: asks the server to stop the job (DELETE /jobs/{id}). The
+// job ends within about a second with a `cancelled` event, handled below.
+progressEl.addEventListener("click", async (event) => {
+  if (!event.target.closest('[data-action="stop"]') || !currentJobId || !progress) return;
+  progress.stopping = true;
+  renderProgress();
+  try {
+    const response = await fetch(`/jobs/${encodeURIComponent(currentJobId)}`, { method: "DELETE" });
+    if (!response.ok && response.status !== 404) {
+      throw new Error(extractErrorMessage(await response.json()));
+    }
+  } catch (err) {
+    progress.stopping = false;
+    renderProgress();
+    setStatus("error", err.message || "Couldn't stop it.");
+  }
+});
 
 function tripDayCount() {
   if (!live || !live.route) return null;
@@ -260,6 +303,7 @@ function tripDayCount() {
 
 let jobSource = null;
 let live = null;
+let currentJobId = null;
 
 function jobInUrl() {
   const match = location.hash.match(/job=([A-Za-z0-9]+)/);
@@ -268,12 +312,14 @@ function jobInUrl() {
 
 function followJob(jobId) {
   if (jobSource) jobSource.close();
+  currentJobId = jobId;
   live = {
     kind: null, route: null, flights: null, hotels: null, days: [], trip: null, cities: [],
-    failed: false,
+    failed: false, cancelled: false,
   };
   submitButton.disabled = true;
   if (!progress) startProgress();  // reattaching after a reload
+  renderProgress();  // now there's a job to stop
 
   jobSource = new EventSource(`/jobs/${encodeURIComponent(jobId)}/events`);
   jobSource.onmessage = (message) => handleJobEvent(JSON.parse(message.data));
@@ -347,10 +393,24 @@ function handleJobEvent(event) {
       endProgress("failed");
       setStatus("error", event.detail);
       break;
+    case "cancelled":
+      // Stopped by the traveller. What arrived so far is dropped, unless the
+      // trip had already been saved (only the restaurants were stopped).
+      live.cancelled = true;
+      endProgress("stopped");
+      if (!event.trip_saved) {
+        resultEl.hidden = true;
+        resultEl.innerHTML = "";
+        reviseCard.hidden = true;
+      }
+      history.replaceState(null, "", location.pathname);
+      submitButton.disabled = false;
+      break;
     case "done":
       jobSource.close();
       jobSource = null;
-      if (!live.failed) {
+      currentJobId = null;
+      if (!live.failed && !live.cancelled) {
         hideStatus();
         endProgress("done");
       }
@@ -797,6 +857,21 @@ function renderStaysCard(stays) {
   return `<div class="card"><h3>Where to stay</h3>${blocks.join("")}</div>`;
 }
 
+// The budget check, worked out in code (app/agent/budget.py).
+function renderBudget(check) {
+  if (!check) return "";
+  return `<p class="budget-line ${check.within ? "within" : "over"}">${escapeHtml(check.message)}</p>`;
+}
+
+// What the input guardrail says to know before going: permits, the season.
+function renderCautions(cautions) {
+  if (!cautions || !cautions.length) return "";
+  return `<div class="cautions">
+      <strong>Before you go</strong>
+      <ul>${cautions.map((c) => `<li>${escapeHtml(c)}</li>`).join("")}</ul>
+    </div>`;
+}
+
 function renderTrip(trip) {
   const it = trip.itinerary;
   tripCurrency = it.currency || "INR";
@@ -816,6 +891,8 @@ function renderTrip(trip) {
       <h2>${escapeHtml(it.destination)} — ${escapeHtml(it.start_date)} to ${escapeHtml(it.end_date)}, ${it.travelers} traveller(s)</h2>
       ${it.stays && it.stays.length ? renderRouteLine(it.stays) : ""}
       ${total ? `<p class="trip-cost">Estimated total: ${total}</p>` : ""}
+      ${renderBudget(it.budget_check)}
+      ${renderCautions(trip.request && trip.request.cautions)}
       ${trip.summary ? `<p class="summary">${escapeHtml(trip.summary)}</p>` : ""}
     </div>
 

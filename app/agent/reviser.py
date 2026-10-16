@@ -31,6 +31,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.agent.budget import check_budget
 from app.agent.events import status
 from app.agent.itinerary_json import ItineraryValidationError, parse_itinerary
 from app.agent.llm import LLM, OpenAILLM
@@ -591,6 +592,7 @@ def _build_package_revision_node(llm: LLM):
             total_estimated_cost=flight_cost + hotel_cost + activity_cost,
             notes=state["notes"],
         )
+        revised.budget_check = check_budget(previous.request, revised)
         if not _what_changed(itinerary, revised)[0]:
             # Routed, but everything it pointed at was already the case —
             # e.g. "book the cheapest flight" when the cheapest is booked.

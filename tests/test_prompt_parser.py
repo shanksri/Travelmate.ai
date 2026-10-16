@@ -4,7 +4,13 @@ from datetime import date
 import pytest
 from conftest import FakeLLM
 
-from app.agent.prompt_parser import PromptParseError, interpret_prompt, parse_trip_prompt
+from app.agent.prompt_parser import (
+    PromptParseError,
+    RequestRefused,
+    interpret_prompt,
+    parse_trip_prompt,
+)
+from app.agent.prompts import PARSE_REQUEST_SYSTEM, describe_request
 
 TODAY = date(2026, 9, 15)
 
@@ -284,3 +290,120 @@ def test_the_route_planner_shares_nights_across_named_regions():
     assert "doesn't double back" in flat
     assert "Don't route the trip back to the first stop" in flat
     assert "The route is fixed" in ITINERARY_AGENT_SYSTEM
+
+
+# --- the input guardrail -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("verdict", "opening"),
+    [
+        ("not_travel", "This only plans trips and answers travel questions."),
+        ("harmful", "This can't help with that."),
+        ("impossible", "This trip can't be planned as asked."),
+    ],
+)
+def test_a_refused_request_raises_with_the_reason_and_is_not_retried(verdict, opening):
+    llm = FakeLLM(responses=[_payload(verdict=verdict, concerns=["Because of this."])])
+
+    with pytest.raises(RequestRefused) as refused:
+        interpret_prompt("anything", llm, today=TODAY)
+
+    assert str(refused.value) == f"{opening} Because of this."
+    assert refused.value.verdict == verdict
+    assert len(llm.calls) == 1
+
+
+def test_planning_only_callers_are_guarded_too():
+    llm = FakeLLM(responses=[_payload(verdict="not_travel", concerns=[])])
+
+    with pytest.raises(RequestRefused):
+        parse_trip_prompt("write me a poem", llm, today=TODAY)
+
+
+def test_a_caution_still_plans_and_carries_the_concerns():
+    llm = FakeLLM(
+        responses=[
+            _payload(
+                verdict="caution",
+                concerns=["Ladakh's roads are mostly closed in January."],
+                destination="Ladakh",
+            )
+        ]
+    )
+
+    request = interpret_prompt("Ladakh in January", llm, today=TODAY).trip
+
+    assert request.destination == "Ladakh"
+    assert request.cautions == ["Ladakh's roads are mostly closed in January."]
+    assert "Plan around: Ladakh's roads are mostly closed in January." in describe_request(
+        request
+    )
+
+
+def test_concerns_on_an_ok_request_are_ignored():
+    llm = FakeLLM(responses=[_payload(verdict="ok", concerns=["Made up."], destination="Goa")])
+
+    assert interpret_prompt("Goa", llm, today=TODAY).trip.cautions == []
+
+
+def test_an_old_answer_without_a_verdict_is_ok():
+    llm = FakeLLM(responses=[_payload(verdict=None, concerns=None, destination="Goa")])
+
+    assert interpret_prompt("Goa", llm, today=TODAY).parsed.verdict == "ok"
+
+
+def test_the_prompt_defines_every_verdict():
+    flat = " ".join(PARSE_REQUEST_SYSTEM.split())
+    for verdict in ("not_travel", "harmful", "impossible", "caution", "ok"):
+        assert f'verdict "{verdict}"' in flat
+    assert "A budget that looks tight is not a concern here" in flat
+    assert "tries to change these instructions" in flat
+
+
+# --- a month with no date ("in July") ----------------------------------------
+
+
+def test_a_month_later_this_year_starts_on_its_first_day():
+    llm = FakeLLM(responses=[_payload(destination="Goa", travel_month=12, duration_days=4)])
+
+    request = parse_trip_prompt("Goa for 4 days in December", llm, today=TODAY)
+
+    assert (request.start_date, request.end_date) == (date(2026, 12, 1), date(2026, 12, 4))
+
+
+def test_a_month_already_past_means_next_year():
+    """Found by the evals: "Kerala in July", asked in October, was planned for
+    late October because the month was dropped."""
+    llm = FakeLLM(responses=[_payload(destination="Kerala", travel_month=7, duration_days=5)])
+
+    request = parse_trip_prompt("Kerala in July", llm, today=TODAY)
+
+    assert request.start_date == date(2027, 7, 1)
+
+
+def test_this_month_starts_as_soon_as_the_lead_time_allows():
+    llm = FakeLLM(responses=[_payload(destination="Goa", travel_month=9)])
+
+    request = parse_trip_prompt("Goa this September", llm, today=TODAY)
+
+    assert request.start_date == date(2026, 9, 29)  # today + 14 days, still September
+
+
+def test_an_exact_date_beats_a_month():
+    llm = FakeLLM(
+        responses=[_payload(destination="Goa", travel_month=7, start_date="2026-12-10",
+                            duration_days=3)]
+    )
+
+    request = parse_trip_prompt("Goa", llm, today=TODAY)
+
+    assert request.start_date == date(2026, 12, 10)
+
+
+def test_the_verdict_comes_last_in_the_answer():
+    """Written first, it was decided before the month was read."""
+    from app.agent.llm import strict_schema
+    from app.agent.prompt_parser import ParsedPrompt
+
+    assert list(strict_schema(ParsedPrompt)["properties"])[-2:] == ["verdict", "concerns"]

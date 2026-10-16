@@ -200,3 +200,31 @@ def test_the_draft_schema_requires_exactly_the_trips_days():
     assert days["minItems"] == 4 and days["maxItems"] == 4
     assert draft_itinerary_for(4) is draft_itinerary_for(4)  # built once per length
     assert draft_itinerary_for(4).__name__ == "DraftItinerary"
+
+
+def test_a_stream_read_only_partly_is_closed():
+    """A stopped job stops reading the itinerary mid-answer; the connection
+    must close then, so OpenAI stops writing (and billing) the rest."""
+
+    class _Stream:
+        def __init__(self):
+            self.closed = False
+
+        def __iter__(self):
+            for text in ('{"days": [', '{"day": 1}', "]}"):
+                delta = SimpleNamespace(content=text, refusal=None)
+                yield SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
+
+        def close(self):
+            self.closed = True
+
+    stream = _Stream()
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kw: stream))
+    )
+    chunks = OpenAILLM(client, model="gpt-4o-mini").stream(system="s", user="u")
+
+    next(chunks)
+    chunks.close()  # the reader stops early
+
+    assert stream.closed

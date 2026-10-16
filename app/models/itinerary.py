@@ -68,6 +68,10 @@ class TripRequest(BaseModel):
     # What kind of places to look up on Google Maps for each city of the trip
     # ("restaurants"), when the traveller asked for that alongside the plan.
     places_per_city: str | None = None
+    # What the input guardrail thinks the traveller should know before going
+    # (a permit, the season, an advisory), one sentence each. The trip is
+    # still planned; these are shown with it and given to the itinerary agent.
+    cautions: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -261,6 +265,21 @@ class HotelStay(BaseModel):
         return self.options[0] if self.options else None
 
 
+class BudgetCheck(BaseModel):
+    """The plan's cost against the traveller's budget, worked out in code
+    (app/agent/budget.py), never by a model."""
+
+    budget: float
+    total: float
+    flights: float
+    hotels: float
+    activities: float
+    within: bool
+    # Parts with no price in the total: not requested, or none found.
+    missing: list[str] = Field(default_factory=list)
+    message: str
+
+
 class Itinerary(BaseModel):
     destination: str
     start_date: date
@@ -284,6 +303,8 @@ class Itinerary(BaseModel):
     currency: str = DEFAULT_CURRENCY
     total_estimated_cost: float | None = Field(default=None, ge=0)
     notes: list[str] = Field(default_factory=list)
+    # Set when the traveller gave a budget.
+    budget_check: BudgetCheck | None = None
 
     @model_validator(mode="before")
     @classmethod

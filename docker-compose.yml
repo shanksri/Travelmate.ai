@@ -78,5 +78,24 @@ services:
     command: ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
     profiles: ["test"]
 
+  # The evals (evals/run.py): fixed prompts against the real OpenAI models,
+  # so they need the keys in .env. Trips are kept in memory, and flights and
+  # hotels are sample data unless --live is passed, so a run saves nothing
+  # and spends no SerpApi searches. Costs a few cents in OpenAI calls.
+  #   docker compose --profile evals run --rm evals [--only guardrail] [--repeat 3]
+  evals:
+    build:
+      context: .
+      target: dev
+    env_file: .env
+    environment:
+      TRAVELMATE_STORE: memory
+      LANGSMITH_TRACING: "false"
+    volumes:
+      - .:/srv
+    working_dir: /srv
+    entrypoint: ["python", "-m", "evals.run"]
+    profiles: ["evals"]
+
 volumes:
   pgdata:

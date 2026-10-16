@@ -5,6 +5,9 @@ job's events over Server-Sent Events: what's being searched, flights and
 hotels as they're found, each day of the plan as it's written, the saved
 trip, and each city's places. See app/jobs.py for the events themselves.
 
+`DELETE /jobs/{id}` stops a job: the page's Stop button. The run ends
+within about a second with a `cancelled` event (app/jobs.py).
+
 The event stream can be dropped and reopened at any time. Each event's SSE
 `id` is its position, so a browser reconnecting sends `Last-Event-ID` and
 picks up after it; a fresh connection (a reload) replays from the start.
@@ -12,6 +15,7 @@ picks up after it; a fresh connection (a reload) replays from the start.
 
 import asyncio
 import json
+from typing import Literal
 
 from fastapi import APIRouter, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
@@ -31,6 +35,12 @@ class JobStarted(BaseModel):
     job_id: str
 
 
+class JobStopping(BaseModel):
+    # "stopping": the run will end shortly with a `cancelled` event.
+    # "finished": it had already ended; nothing was stopped.
+    status: Literal["stopping", "finished"]
+
+
 @router.post("", response_model=JobStarted, status_code=status.HTTP_202_ACCEPTED)
 def start_job(payload: PlanFromPromptRequest) -> JobStarted:
     choices = page_choices(
@@ -41,6 +51,14 @@ def start_job(payload: PlanFromPromptRequest) -> JobStarted:
         end_date=payload.end_date,
     )
     return JobStarted(job_id=start_ask_job(payload.prompt, choices).id)
+
+
+@router.delete("/{job_id}", response_model=JobStopping)
+def stop_job(job_id: str) -> JobStopping:
+    job = registry.get(job_id)
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"No job {job_id}")
+    return JobStopping(status="stopping" if job.cancel() else "finished")
 
 
 @router.get("/{job_id}/events")

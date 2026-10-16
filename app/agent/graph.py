@@ -4,14 +4,17 @@ The trip graph plans one trip from a `TripRequest`:
 
     START -> resolve_destination -> plan_route
           -> [flight_agent, hotel_agent] (parallel)
-          -> itinerary_agent -> final_response_agent -> package_trip -> END
+          -> itinerary_agent -> check_budget -> final_response_agent
+          -> package_trip -> END
 
 `resolve_destination` only does real work when the traveller left the
 destination open. `plan_route` decides the towns slept in and the airports
 (app/agent/route_plan.py), so flights search real airports and hotels are
 searched per town. Flight and hotel search run in parallel since neither
 depends on the other, then join into the itinerary agent, which needs both.
-`package_trip` turns the result into a saveable `PlannedTrip`.
+`check_budget` compares the total with the traveller's budget in code
+(app/agent/budget.py), before the summary is written. `package_trip` turns
+the result into a saveable `PlannedTrip`.
 
 The ask graph is the prompt box. It reads the sentence first and branches:
 
@@ -41,6 +44,7 @@ from app.agent.ask_nodes import (
     next_after_interpret,
     places_for_each_city,
 )
+from app.agent.budget import build_budget_check_node
 from app.agent.llm import LLM
 from app.agent.nodes import (
     build_final_response_node,
@@ -69,6 +73,7 @@ def _add_trip_steps(
     graph.add_node("flight_agent", build_flight_node(provider, llm))
     graph.add_node("hotel_agent", build_hotel_node(provider))
     graph.add_node("itinerary_agent", build_itinerary_node(llm, max_itinerary_retries))
+    graph.add_node("check_budget", build_budget_check_node())
     graph.add_node("final_response_agent", build_final_response_node(llm))
     graph.add_node("package_trip", build_package_trip_node())
 
@@ -77,7 +82,8 @@ def _add_trip_steps(
     graph.add_edge("plan_route", "hotel_agent")
     graph.add_edge("flight_agent", "itinerary_agent")
     graph.add_edge("hotel_agent", "itinerary_agent")
-    graph.add_edge("itinerary_agent", "final_response_agent")
+    graph.add_edge("itinerary_agent", "check_budget")
+    graph.add_edge("check_budget", "final_response_agent")
     graph.add_edge("final_response_agent", "package_trip")
 
 
